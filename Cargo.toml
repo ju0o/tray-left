@@ -1,9 +1,9 @@
 [package]
-name = "tray-left"
+name = "jusage"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Small Windows tray window for remaining Codex usage"
+description = "Jusage, a Windows tray window for remaining Codex usage"
 repository = "https://github.com/ju0o/tray-left"
 publish = false
 

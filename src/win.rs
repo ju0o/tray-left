@@ -9,28 +9,29 @@ use windows_sys::Win32::Foundation::{
     SYSTEMTIME, TRUE, WPARAM,
 };
 use windows_sys::Win32::Graphics::Dwm::{
-    DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
+    DWMWCP_ROUND,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection,
-    CreateFontW, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject,
-    DrawTextW, EndPaint, FillRect, GetDC, GetDeviceCaps, GetTextExtentPoint32W,
-    InvalidateRect, ReleaseDC, RoundRect,
-    SelectObject, SetBkMode, SetTextColor, SetWindowRgn, BITMAPINFO, BITMAPINFOHEADER,
-    DIB_RGB_COLORS, DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER,
-    DT_WORDBREAK, FW_NORMAL, FW_SEMIBOLD, HFONT, HGDIOBJ, LOGPIXELSX, PAINTSTRUCT,
-    PS_SOLID, SRCCOPY, TRANSPARENT,
+    AlphaBlend, BeginPaint, CreateBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontW,
+    CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
+    GetDC, GetDeviceCaps, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, RoundRect,
+    SelectObject, SetBkMode, SetTextCharacterExtra, SetTextColor, SetWindowRgn, AC_SRC_ALPHA,
+    AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS, DT_CENTER,
+    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER,
+    FW_NORMAL, FW_SEMIBOLD, HFONT, HGDIOBJ, LOGPIXELSX, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows_sys::Win32::Storage::FileSystem::FileTimeToLocalFileTime;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Time::FileTimeToSystemTime;
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW, RegSetValueExW,
+    RegCloseKey, RegDeleteKeyValueW, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW,
+    RegSetValueExW,
     HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE,
     REG_DWORD, REG_SZ, RRF_RT_REG_SZ,
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
-use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows_sys::Win32::UI::Controls::{MARGINS, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
@@ -41,19 +42,20 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyIcon, DispatchMessageW,
-    FindWindowW, GetClientRect, GetMessageW, IsWindowVisible, LoadCursorW,
-    PostMessageW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow, SetWindowPos,
-    ShowWindow, SystemParametersInfoW, TranslateMessage, CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW,
-    HICON, ICONINFO, IDC_ARROW, IDC_HAND, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER,
-    SW_HIDE, SW_SHOW, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSW,
-    WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_POPUP,
+    FindWindowW, GetMessageW, GetSystemMetrics, IsWindowVisible, KillTimer,
+    LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow,
+    SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage, CS_DROPSHADOW,
+    CS_HREDRAW, CS_VREDRAW, HICON, ICONINFO, IDC_ARROW, IDC_HAND, SM_CXSMICON, SPI_GETWORKAREA,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP,
+    WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use crate::icon::remaining_icon;
-use crate::usage::{self, Civil, FetchFail, Snapshot};
+use crate::usage::{self, Civil, FetchFail, Pane, Reading, Snapshot};
 
-const CARD_W: i32 = 320;
+const CARD_W: i32 = 440;
+const MOTION_FRAMES: u8 = 16;
 const TRAY_MSG: u32 = 0x8000 + 1;
 const REFRESH_MSG: u32 = 0x8000 + 2;
 const SHOW_MSG: u32 = 0x8000 + 3;
@@ -64,8 +66,6 @@ const HIT_QUIT: u8 = 3;
 
 const INK: u32 = 0x00171717;
 const MUTED: u32 = 0x005A5A5A;
-const PAPER: u32 = 0x00F4F6F7;
-const LINE: u32 = 0x00D8D6D2;
 const WHITE: u32 = 0x00FFFFFF;
 const BUTTON: u32 = 0x00171717;
 const BUTTON_HOVER: u32 = 0x00323232;
@@ -81,18 +81,23 @@ enum View {
 
 struct Fonts {
     dpi: i32,
-    title: HFONT,
+    brand: HFONT,
     hero: HFONT,
+    figure: HFONT,
     lead: HFONT,
     body: HFONT,
+    quiet: HFONT,
 }
 
 unsafe impl Send for Fonts {}
 
-struct Row {
+struct Tile {
+    spot: Spot,
     label: String,
     value: String,
-    value_color: u32,
+    mood: String,
+    accent: u32,
+    hot: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -124,22 +129,30 @@ struct Card {
     close: Spot,
     refresh: Spot,
     quit: Spot,
+    brand_box: Spot,
+    plan_box: Spot,
     hero_box: Spot,
     scope_box: Option<Spot>,
     bar: Option<Spot>,
     refill_box: Option<Spot>,
     note_box: Option<Spot>,
-    rows_top: i32,
-    row_h: i32,
-    rows: Vec<Row>,
+    delta_box: Option<Spot>,
+    tiles: Vec<Tile>,
     hero: String,
     word: String,
     scope: String,
     refill: String,
     note: String,
+    delta: String,
+    plan: String,
     hero_big: bool,
     accent: u32,
     remaining: u32,
+}
+
+struct Motion {
+    tick: u8,
+    live: bool,
 }
 
 static VIEW: Mutex<View> = Mutex::new(View::Loading);
@@ -151,12 +164,14 @@ static HOVER: AtomicU8 = AtomicU8::new(0);
 static PRESSED: AtomicU8 = AtomicU8::new(0);
 static TRACKING: AtomicBool = AtomicBool::new(false);
 static WAKE: OnceLock<Sender<()>> = OnceLock::new();
+static DELTA: Mutex<String> = Mutex::new(String::new());
+static MOTION: Mutex<Motion> = Mutex::new(Motion { tick: MOTION_FRAMES, live: false });
 
 pub fn run() {
     unsafe {
         let _ = set_process_dpi();
-        let class_name = wide("TrayLeftWindow");
-        let title = wide("Codex");
+        let class_name = wide("JusageWindow");
+        let title = wide("Jusage");
         let instance = GetModuleHandleW(std::ptr::null());
         let class = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW,
@@ -173,7 +188,7 @@ pub fn run() {
         if RegisterClassW(&class) == 0 {
             return;
         }
-        let mutex_name = wide("Local\\TrayLeftSingle");
+        let mutex_name = wide("Local\\JusageSingle");
         let mutex = CreateMutexW(std::ptr::null(), FALSE, mutex_name.as_ptr());
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let existing = FindWindowW(class_name.as_ptr(), std::ptr::null());
@@ -210,9 +225,10 @@ pub fn run() {
             &pref as *const i32 as *const c_void,
             4,
         );
-        let icon = make_icon(32, 0, usage::mood_rgb(None));
+        enable_glass(hwnd);
+        let icon = make_icon(icon_px(), 0, usage::mood_rgb(None), false);
         ICON_SLOT.store(icon as usize, Ordering::SeqCst);
-        add_tray(hwnd, icon, "Codex 확인 중");
+        add_tray(hwnd, icon, "Jusage 확인 중");
         apply_view();
         remember_login();
         let (tx, rx) = mpsc::channel();
@@ -262,9 +278,18 @@ fn worker(rx: mpsc::Receiver<()>) {
 
 fn publish(home: &std::path::Path) {
     let next = match usage::fetch_usage(home) {
-        Ok(snapshot) => View::Ready(snapshot),
-        Err(FetchFail::NoLogin) => View::NeedLogin,
-        Err(fail) => View::Failed(fail.code()),
+        Ok(snapshot) => {
+            note_change(&snapshot);
+            View::Ready(snapshot)
+        }
+        Err(FetchFail::NoLogin) => {
+            clear_delta();
+            View::NeedLogin
+        }
+        Err(fail) => {
+            clear_delta();
+            View::Failed(fail.code())
+        }
     };
     if let Ok(mut view) = VIEW.lock() {
         *view = next;
@@ -303,7 +328,8 @@ unsafe fn apply_view() {
     };
     let (tip, remaining, rgb, kind, left, plan, code) = describe(&view);
     let hwnd = HWND_SLOT.load(Ordering::SeqCst) as HWND;
-    let icon = make_icon(32, remaining, rgb);
+    let show_number = matches!(view, View::Ready(_));
+    let icon = make_icon(icon_px(), remaining, rgb, show_number);
     if !hwnd.is_null() {
         update_tray(hwnd, icon, &tip);
     }
@@ -311,7 +337,15 @@ unsafe fn apply_view() {
     if !old.is_null() && old != icon {
         DestroyIcon(old);
     }
-    write_state(kind, left, &plan, code);
+    let focus_name = match &view {
+        View::Ready(snapshot) => usage::focus_reading(snapshot).name.to_string(),
+        _ => String::new(),
+    };
+    let week_left = match &view {
+        View::Ready(snapshot) => usage::readings(snapshot).1.map(|reading| reading.remaining),
+        _ => None,
+    };
+    write_state(kind, left, &plan, code, &focus_name, week_left);
     if hwnd.is_null() {
         return;
     }
@@ -324,7 +358,7 @@ unsafe fn apply_view() {
 fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, String, Option<u16>) {
     match view {
         View::Loading => (
-            "Codex 확인 중".into(),
+            "Jusage 확인 중".into(),
             0,
             usage::mood_rgb(None),
             "loading",
@@ -333,7 +367,7 @@ fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, St
             None,
         ),
         View::NeedLogin => (
-            "Codex 로그인 필요".into(),
+            "Jusage 로그인 필요".into(),
             0,
             usage::mood_rgb(None),
             "login",
@@ -342,7 +376,7 @@ fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, St
             None,
         ),
         View::Failed(code) => (
-            "Codex 확인 실패".into(),
+            "Jusage 확인 실패".into(),
             0,
             usage::mood_rgb(None),
             "failed",
@@ -351,13 +385,13 @@ fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, St
             Some(*code),
         ),
         View::Ready(snapshot) => {
-            let left = usage::remaining_percent(snapshot.session_used);
+            let focus = usage::focus_reading(snapshot);
             (
-                format!("Codex {left}% 남음"),
-                left,
-                usage::mood_rgb(Some(left)),
+                usage::hover_tip(snapshot),
+                focus.remaining,
+                usage::mood_rgb(Some(focus.remaining)),
                 "ready",
-                Some(left),
+                Some(focus.remaining),
                 snapshot.plan.clone(),
                 None,
             )
@@ -427,12 +461,14 @@ fn local_civil(unix: i64) -> Option<Civil> {
 
 fn card_for(view: &View, dpi: i32) -> Card {
     let s = |value: i32| scale(value, dpi);
-    let mut rows = Vec::new();
+    let mut tiles = Vec::new();
     let hero;
     let mut word = String::new();
     let mut scope = String::new();
     let mut refill = String::new();
     let mut note = String::new();
+    let mut delta = String::new();
+    let mut plan = String::new();
     let mut hero_big = false;
     let mut accent = INK;
     let mut remaining = 0u32;
@@ -448,78 +484,69 @@ fn card_for(view: &View, dpi: i32) -> Card {
             note = "잠시 뒤 다시 확인해 주세요.".to_string();
         }
         View::Ready(snapshot) => {
-            let left = usage::remaining_percent(snapshot.session_used);
-            remaining = left;
-            hero = format!("{left}%");
-            word = usage::mood_word(left).to_string();
+            let (session, week) = usage::readings(snapshot);
+            let focus = usage::focus_reading(snapshot);
+            remaining = focus.remaining;
+            hero = format!("{}%", focus.remaining);
+            word = usage::mood_word(focus.remaining).to_string();
             hero_big = true;
-            accent = rgb_color(usage::mood_rgb(Some(left)));
+            accent = rgb_color(usage::mood_rgb(Some(focus.remaining)));
             show_bar = true;
-            scope = usage::window_name(snapshot.session_window_seconds, false).to_string();
+            scope = focus.name.to_string();
+            plan = snapshot.plan.clone();
             let now = now_unix();
-            if let Some(at) = reset_unix(snapshot.session_reset_at, snapshot.session_reset_after, now) {
+            if let Some(at) = reset_unix(focus.reset_at, focus.reset_after, now) {
                 if let (Some(today), Some(moment)) = (local_civil(now), local_civil(at)) {
-                    refill = usage::refill_phrase(today, moment);
+                    refill = usage::named_refill(focus.name, &usage::refill_phrase(today, moment));
                 }
             }
-            if let Some(used) = snapshot.weekly_used {
-                let week_left = usage::remaining_percent(used);
-                let mut label = usage::window_name(snapshot.weekly_window_seconds, true).to_string();
-                if label == scope {
-                    label = "다른 창".to_string();
-                }
-                let value_color = if week_left > 20 {
-                    INK
-                } else {
-                    rgb_color(usage::mood_rgb(Some(week_left)))
-                };
-                rows.push(Row {
-                    label,
-                    value: format!("{week_left}% 남음"),
-                    value_color,
-                });
+            if let Some(line) = DELTA.lock().ok() {
+                delta = line.clone();
             }
-            if !snapshot.plan.is_empty() {
-                rows.push(Row {
-                    label: "요금제".to_string(),
-                    value: snapshot.plan.clone(),
-                    value_color: INK,
-                });
+            if let Some(week) = week {
+                let mut session_tile = tile_from(session);
+                let mut week_tile = tile_from(week);
+                session_tile.hot = focus.pane == Pane::Session;
+                week_tile.hot = focus.pane == Pane::Week;
+                tiles.push(session_tile);
+                tiles.push(week_tile);
             }
         }
     }
     let width = s(CARD_W);
-    let pad = s(20);
-    let close_size = s(44);
+    let pad = s(22);
+    let close_size = s(40);
     let close = Spot {
-        x: width - close_size - s(6),
-        y: s(4),
+        x: width - close_size - s(8),
+        y: s(8),
         w: close_size,
         h: close_size,
     };
-    let mut y = s(56);
+    let brand_box = Spot { x: pad, y: s(8), w: s(210), h: close_size };
+    let plan_box = Spot {
+        x: brand_box.x + brand_box.w,
+        y: s(8),
+        w: close.x - brand_box.x - brand_box.w - s(8),
+        h: close_size,
+    };
+    let mut y = s(58);
     let hero_box = Spot {
         x: pad,
         y,
         w: width - pad * 2,
-        h: if hero_big { s(40) } else { s(32) },
+        h: if hero_big { s(58) } else { s(36) },
     };
     y += hero_box.h;
     let scope_box = if scope.is_empty() {
         None
     } else {
-        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(24) };
+        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(20) };
         y += spot.h;
         Some(spot)
     };
     let bar = if show_bar {
-        y += s(10);
-        let spot = Spot {
-            x: pad,
-            y,
-            w: width - pad * 2,
-            h: s(6).max(4),
-        };
+        y += s(12);
+        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(8).max(6) };
         y += spot.h;
         Some(spot)
     } else {
@@ -528,66 +555,89 @@ fn card_for(view: &View, dpi: i32) -> Card {
     let refill_box = if refill.is_empty() {
         None
     } else {
-        y += s(8);
-        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(44) };
+        y += s(10);
+        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(22) };
         y += spot.h;
         Some(spot)
     };
     let note_box = if note.is_empty() {
         None
     } else {
-        y += s(6);
-        let spot = Spot { x: s(28), y, w: width - s(56), h: s(52) };
+        y += s(8);
+        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(22) };
         y += spot.h;
         Some(spot)
     };
-    let rows_top = if rows.is_empty() {
-        y
+    if !tiles.is_empty() {
+        y += s(16);
+        let gap = s(10);
+        let tile_w = (width - pad * 2 - gap) / tiles.len() as i32;
+        let tile_h = s(86);
+        for (index, tile) in tiles.iter_mut().enumerate() {
+            tile.spot = Spot {
+                x: pad + (tile_w + gap) * index as i32,
+                y,
+                w: tile_w,
+                h: tile_h,
+            };
+        }
+        y += tile_h;
+    }
+    let delta_box = if delta.is_empty() {
+        None
     } else {
-        y += s(8);
-        let top = y;
-        y += s(32) * rows.len() as i32;
-        top
+        y += s(12);
+        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(20) };
+        y += spot.h;
+        Some(spot)
     };
-    let row_h = if rows.is_empty() { 0 } else { s(32) };
-    y += s(12);
-    let button_w = s(168).min(width - pad * 2);
+    y += s(18);
+    let button_w = s(176).min(width - pad * 2);
     let refresh = Spot {
         x: (width - button_w) / 2,
         y,
         w: button_w,
-        h: s(44),
+        h: s(42),
     };
     y += refresh.h;
-    let quit = Spot {
-        x: pad,
-        y,
-        w: width - pad * 2,
-        h: s(44),
-    };
-    y += quit.h + s(8);
+    let quit = Spot { x: pad, y, w: width - pad * 2, h: s(36) };
+    y += quit.h + s(12);
     Card {
         width,
         height: y,
         close,
         refresh,
         quit,
+        brand_box,
+        plan_box,
         hero_box,
         scope_box,
         bar,
         refill_box,
         note_box,
-        rows_top,
-        row_h,
-        rows,
+        delta_box,
+        tiles,
         hero,
         word,
         scope,
         refill,
         note,
+        delta,
+        plan,
         hero_big,
         accent,
         remaining,
+    }
+}
+
+fn tile_from(reading: Reading) -> Tile {
+    Tile {
+        spot: Spot { x: 0, y: 0, w: 0, h: 0 },
+        label: reading.name.to_string(),
+        value: format!("{}%", reading.remaining),
+        mood: usage::mood_word(reading.remaining).to_string(),
+        accent: rgb_color(usage::mood_rgb(Some(reading.remaining))),
+        hot: false,
     }
 }
 
@@ -600,7 +650,7 @@ unsafe fn place(hwnd: HWND) {
     let mut work = RECT::default();
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut RECT as *mut c_void, 0);
     let x = work.right - card.width - scale(16, dpi);
-    let y = work.bottom - card.height - scale(16, dpi);
+    let y = work.bottom - card.height - scale(16, dpi) + motion_offset();
     SetWindowPos(
         hwnd,
         std::ptr::null_mut(),
@@ -610,7 +660,7 @@ unsafe fn place(hwnd: HWND) {
         card.height,
         SWP_NOZORDER | SWP_NOACTIVATE,
     );
-    let radius = scale(18, dpi);
+    let radius = scale(22, dpi);
     let region = CreateRoundRectRgn(0, 0, card.width + 1, card.height + 1, radius, radius);
     if !region.is_null() {
         SetWindowRgn(hwnd, region, TRUE);
@@ -618,9 +668,14 @@ unsafe fn place(hwnd: HWND) {
 }
 
 unsafe fn show_panel(hwnd: HWND) {
+    if let Ok(mut motion) = MOTION.lock() {
+        motion.tick = 0;
+        motion.live = true;
+    }
     place(hwnd);
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
+    SetTimer(hwnd, 1, 16, None);
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -650,6 +705,22 @@ unsafe extern "system" fn wnd_proc(
         }
         REFRESH_MSG => {
             apply_view();
+            0
+        }
+        WM_TIMER => {
+            let done = if let Ok(mut motion) = MOTION.lock() {
+                if motion.tick < MOTION_FRAMES {
+                    motion.tick += 1;
+                }
+                motion.tick >= MOTION_FRAMES
+            } else {
+                true
+            };
+            place(hwnd);
+            InvalidateRect(hwnd, std::ptr::null(), FALSE);
+            if done {
+                KillTimer(hwnd, 1);
+            }
             0
         }
         WM_ERASEBKGND => 1,
@@ -759,48 +830,50 @@ fn hit_at(hwnd: HWND, x: i32, y: i32) -> u8 {
 unsafe fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
-    let mut client = RECT::default();
-    GetClientRect(hwnd, &mut client);
-    let width = client.right.max(1);
-    let height = client.bottom.max(1);
-    let mem = CreateCompatibleDC(hdc);
-    let bitmap = CreateCompatibleBitmap(hdc, width, height);
-    let old = SelectObject(mem, bitmap as HGDIOBJ);
     let view = VIEW.lock().ok().map(|view| view.clone()).unwrap_or(View::Loading);
     let card = card_for(&view, window_dpi(hwnd));
     let fonts = fonts_for(window_dpi(hwnd));
-    paint_card(mem, &card, &fonts);
-    BitBlt(hdc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
-    SelectObject(mem, old);
-    DeleteObject(bitmap as HGDIOBJ);
-    DeleteDC(mem);
+    blend_round(hdc, Spot { x: 0, y: 0, w: card.width, h: card.height }, px(&card, 22), [255, 255, 255, 188], true);
+    paint_card(hdc, &card, &fonts);
     EndPaint(hwnd, &ps);
 }
 
-unsafe fn paint_card(hdc: HGDIOBJ, card: &Card, fonts: &Fonts) {
-    let hdc = hdc as windows_sys::Win32::Graphics::Gdi::HDC;
+unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, fonts: &Fonts) {
     let hover = HOVER.load(Ordering::Relaxed);
-    let pad = px(card, 20);
-    fill_rect(hdc, 0, 0, card.width, card.height, PAPER);
+    let one = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
+    if hover == HIT_CLOSE {
+        fill_round(hdc, card.close, card.close.h / 2, SOFT);
+    }
+    SetTextCharacterExtra(hdc, px(card, 1).max(1));
     text_in(
         hdc,
-        fonts.title,
+        fonts.brand,
         INK,
-        rect(pad, card.close.y, card.close.x - pad - px(card, 8), card.close.h),
-        "Codex",
+        card.brand_box.rect(),
+        "JUSAGE",
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
-    if hover == HIT_CLOSE {
-        fill_round(hdc, card.close, px(card, 16), SOFT);
-    }
+    let brand_w = text_size(hdc, fonts.brand, "JUSAGE").cx + px(card, 18);
+    SetTextCharacterExtra(hdc, 0);
     text_in(
         hdc,
-        fonts.title,
+        fonts.quiet,
         MUTED,
-        card.close.rect(),
-        "×",
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        rect(card.brand_box.x + brand_w, card.brand_box.y, px(card, 70), card.brand_box.h),
+        "CODEX",
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
+    if !card.plan.is_empty() {
+        text_in(
+            hdc,
+            fonts.quiet,
+            MUTED,
+            card.plan_box.rect(),
+            &card.plan,
+            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+    }
+    text_in(hdc, fonts.brand, MUTED, card.close.rect(), "×", DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     if card.hero_big {
         paint_meter(hdc, card, fonts);
     } else {
@@ -810,59 +883,71 @@ unsafe fn paint_card(hdc: HGDIOBJ, card: &Card, fonts: &Fonts) {
             INK,
             card.hero_box.rect(),
             &card.hero,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            one,
         );
     }
     if let Some(scope) = card.scope_box {
-        text_in(
-            hdc,
-            fonts.body,
-            MUTED,
-            scope.rect(),
-            &card.scope,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-        );
+        text_in(hdc, fonts.quiet, MUTED, scope.rect(), &card.scope, one);
     }
     if let Some(bar) = card.bar {
-        fill_round(hdc, bar, bar.h, LINE);
-        let filled = (bar.w as u32 * card.remaining / 100) as i32;
+        blend_round(hdc, bar, bar.h, [24, 24, 24, 28], false);
+        let eased = (card.remaining as f32 * motion_ease()) as u32;
+        let filled = (bar.w as u32 * eased / 100) as i32;
         if filled > 0 {
-            fill_round(hdc, Spot { w: filled.max(bar.h), ..bar }, bar.h, card.accent);
+            let [r, g, b] = color_rgb(card.accent);
+            blend_round(hdc, Spot { w: filled.max(bar.h), ..bar }, bar.h, [r, g, b, 255], false);
         }
     }
     if let Some(spot) = card.refill_box {
-        text_in(
-            hdc,
-            fonts.body,
-            MUTED,
-            spot.rect(),
-            &card.refill,
-            DT_CENTER | DT_WORDBREAK | DT_NOPREFIX,
-        );
+        text_in(hdc, fonts.body, MUTED, spot.rect(), &card.refill, one);
     }
     if let Some(spot) = card.note_box {
+        text_in(hdc, fonts.body, MUTED, spot.rect(), &card.note, one);
+    }
+    for tile in &card.tiles {
+        let radius = px(card, 16);
+        if tile.hot {
+            let [r, g, b] = color_rgb(tile.accent);
+            blend_round(hdc, tile.spot, radius, [r, g, b, 70], false);
+            let inset = Spot {
+                x: tile.spot.x + 1,
+                y: tile.spot.y + 1,
+                w: (tile.spot.w - 2).max(1),
+                h: (tile.spot.h - 2).max(1),
+            };
+            blend_round(hdc, inset, radius - 1, [255, 255, 255, 168], false);
+        } else {
+            blend_round(hdc, tile.spot, radius, [255, 255, 255, 130], false);
+        }
+        let inner_x = tile.spot.x + px(card, 14);
+        let inner_w = tile.spot.w - px(card, 28);
         text_in(
             hdc,
-            fonts.body,
+            fonts.quiet,
             MUTED,
-            spot.rect(),
-            &card.note,
-            DT_CENTER | DT_WORDBREAK | DT_NOPREFIX,
+            rect(inner_x, tile.spot.y + px(card, 10), inner_w, px(card, 18)),
+            &tile.label,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+        text_in(
+            hdc,
+            fonts.figure,
+            INK,
+            rect(inner_x, tile.spot.y + px(card, 28), inner_w, px(card, 28)),
+            &tile.value,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+        text_in(
+            hdc,
+            fonts.quiet,
+            tile.accent,
+            rect(inner_x, tile.spot.y + px(card, 56), inner_w, px(card, 18)),
+            &tile.mood,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
     }
-    for (index, row) in card.rows.iter().enumerate() {
-        let y = card.rows_top + card.row_h * index as i32;
-        let label = rect(pad, y, card.width / 2 - pad, card.row_h);
-        let value = rect(card.width / 2, y, card.width / 2 - pad, card.row_h);
-        text_in(hdc, fonts.body, MUTED, label, &row.label, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        text_in(
-            hdc,
-            fonts.body,
-            row.value_color,
-            value,
-            &row.value,
-            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-        );
+    if let Some(spot) = card.delta_box {
+        text_in(hdc, fonts.body, INK, spot.rect(), &card.delta, one);
     }
     let refresh_fill = if hover == HIT_REFRESH { BUTTON_HOVER } else { BUTTON };
     fill_round(hdc, card.refresh, card.refresh.h / 2, refresh_fill);
@@ -886,7 +971,7 @@ unsafe fn paint_card(hdc: HGDIOBJ, card: &Card, fonts: &Fonts) {
 
 unsafe fn paint_meter(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, fonts: &Fonts) {
     let percent = text_size(hdc, fonts.hero, &card.hero);
-    let word = text_size(hdc, fonts.title, &card.word);
+    let word = text_size(hdc, fonts.body, &card.word);
     let gap = px(card, 8);
     let total = percent.cx + if card.word.is_empty() { 0 } else { gap + word.cx };
     let x = card.hero_box.x + (card.hero_box.w - total).max(0) / 2;
@@ -905,7 +990,7 @@ unsafe fn paint_meter(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, 
     let word_y = card.hero_box.y + (card.hero_box.h - word.cy).max(0) / 2;
     text_in(
         hdc,
-        fonts.title,
+        fonts.body,
         card.accent,
         rect(x + percent.cx + gap, word_y, word.cx + px(card, 8), word.cy + 4),
         &card.word,
@@ -929,24 +1014,30 @@ unsafe fn fonts_for(dpi: i32) -> Fonts {
         if fonts.dpi == dpi {
             return Fonts {
                 dpi: fonts.dpi,
-                title: fonts.title,
+                brand: fonts.brand,
                 hero: fonts.hero,
+                figure: fonts.figure,
                 lead: fonts.lead,
                 body: fonts.body,
+                quiet: fonts.quiet,
             };
         }
-        DeleteObject(fonts.title as HGDIOBJ);
+        DeleteObject(fonts.brand as HGDIOBJ);
         DeleteObject(fonts.hero as HGDIOBJ);
+        DeleteObject(fonts.figure as HGDIOBJ);
         DeleteObject(fonts.lead as HGDIOBJ);
         DeleteObject(fonts.body as HGDIOBJ);
+        DeleteObject(fonts.quiet as HGDIOBJ);
     }
     let fonts = make_fonts(dpi);
     *slot = Some(Fonts {
         dpi: fonts.dpi,
-        title: fonts.title,
+        brand: fonts.brand,
         hero: fonts.hero,
+        figure: fonts.figure,
         lead: fonts.lead,
         body: fonts.body,
+        quiet: fonts.quiet,
     });
     fonts
 }
@@ -954,15 +1045,17 @@ unsafe fn fonts_for(dpi: i32) -> Fonts {
 unsafe fn make_fonts(dpi: i32) -> Fonts {
     Fonts {
         dpi,
-        title: font(scale(16, dpi), FW_SEMIBOLD),
-        hero: font(scale(32, dpi), FW_SEMIBOLD),
-        lead: font(scale(20, dpi), FW_SEMIBOLD),
-        body: font(scale(16, dpi), FW_NORMAL),
+        brand: font(scale(12, dpi), FW_SEMIBOLD, "Cascadia Mono"),
+        hero: font(scale(46, dpi), FW_SEMIBOLD, "Cascadia Mono"),
+        figure: font(scale(22, dpi), FW_SEMIBOLD, "Cascadia Mono"),
+        lead: font(scale(18, dpi), FW_SEMIBOLD, "Segoe UI"),
+        body: font(scale(13, dpi), FW_NORMAL, "Segoe UI"),
+        quiet: font(scale(12, dpi), FW_NORMAL, "Segoe UI"),
     }
 }
 
-unsafe fn font(height: i32, weight: u32) -> HFONT {
-    let face = wide("Segoe UI");
+unsafe fn font(height: i32, weight: u32, face_name: &str) -> HFONT {
+    let face = wide(face_name);
     CreateFontW(-height, 0, 0, 0, weight as i32, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr())
 }
 
@@ -985,13 +1078,6 @@ unsafe fn text_in(hdc: windows_sys::Win32::Graphics::Gdi::HDC, font: HFONT, colo
     let text = wide(value);
     DrawTextW(hdc, text.as_ptr(), -1, &mut area, format);
     SelectObject(hdc, old);
-}
-
-unsafe fn fill_rect(hdc: windows_sys::Win32::Graphics::Gdi::HDC, x: i32, y: i32, w: i32, h: i32, color: u32) {
-    let brush = CreateSolidBrush(color as COLORREF);
-    let area = RECT { left: x, top: y, right: x + w, bottom: y + h };
-    FillRect(hdc, &area, brush);
-    DeleteObject(brush as HGDIOBJ);
 }
 
 unsafe fn fill_round(hdc: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, radius: i32, color: u32) {
@@ -1055,8 +1141,8 @@ unsafe fn tray_data(hwnd: HWND, icon: HICON, tip: &str) -> NOTIFYICONDATAW {
     data
 }
 
-unsafe fn make_icon(size: u32, remaining: u32, color: [u8; 3]) -> HICON {
-    let pixels = remaining_icon(size, remaining, color);
+unsafe fn make_icon(size: u32, remaining: u32, color: [u8; 3], show_number: bool) -> HICON {
+    let pixels = remaining_icon(size, remaining, color, show_number);
     let bmi = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -1110,10 +1196,12 @@ unsafe fn screen_dpi() -> i32 {
     if dpi <= 0 { 96 } else { dpi }
 }
 
-fn write_state(kind: &str, left: Option<u32>, plan: &str, fail_code: Option<u16>) {
+fn write_state(kind: &str, left: Option<u32>, plan: &str, fail_code: Option<u16>, focus: &str, week_left: Option<u32>) {
     let plan: String = plan.chars().filter(|ch| !ch.is_control()).take(40).collect();
+    let focus: String = focus.chars().filter(|ch| !ch.is_control()).take(20).collect();
     let body = if kind == "ready" {
-        format!("state=ready\nleft={}\nplan={plan}\n", left.unwrap_or(0))
+        let week = week_left.map(|value| format!("week={value}\n")).unwrap_or_default();
+        format!("state=ready\nleft={}\nplan={plan}\nfocus={focus}\n{week}", left.unwrap_or(0))
     } else if let Some(code) = fail_code {
         format!("state={kind}\ncode={code}\n")
     } else {
@@ -1134,9 +1222,11 @@ fn remember_login() {
     };
     let path = exe.to_string_lossy();
     let sub = wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
-    let name = wide("TrayLeft");
+    let name = wide("Jusage");
+    let old_name = wide("TrayLeft");
     let value = wide(&path);
     unsafe {
+        let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, sub.as_ptr(), old_name.as_ptr());
         let _ = RegSetKeyValueW(
             HKEY_CURRENT_USER,
             sub.as_ptr(),
@@ -1227,6 +1317,193 @@ unsafe fn exe_matches(key: HKEY, needle: &str) -> bool {
         return false;
     }
     String::from_utf16_lossy(&bytes).to_ascii_lowercase().contains(needle)
+}
+
+fn motion_offset() -> i32 {
+    let Ok(motion) = MOTION.lock() else {
+        return 0;
+    };
+    if !motion.live || motion.tick >= MOTION_FRAMES {
+        return 0;
+    }
+    let left = (MOTION_FRAMES - motion.tick) as i32;
+    left * left * 18 / (MOTION_FRAMES as i32 * MOTION_FRAMES as i32)
+}
+
+fn motion_ease() -> f32 {
+    let tick = MOTION.lock().map(|motion| motion.tick).unwrap_or(MOTION_FRAMES);
+    let t = (tick as f32 / MOTION_FRAMES as f32).clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+fn icon_px() -> u32 {
+    let small = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16) as u32;
+    (small.saturating_mul(2)).clamp(40, 64)
+}
+
+fn color_rgb(color: u32) -> [u8; 3] {
+    [(color & 0xff) as u8, ((color >> 8) & 0xff) as u8, ((color >> 16) & 0xff) as u8]
+}
+
+fn clear_delta() {
+    if let Ok(mut line) = DELTA.lock() {
+        line.clear();
+    }
+}
+
+fn note_change(snapshot: &Snapshot) {
+    let focus = usage::focus_reading(snapshot);
+    let key = match focus.pane {
+        Pane::Session => "session",
+        Pane::Week => "week",
+    };
+    let now = now_unix();
+    let line = read_memory().and_then(|previous| {
+        if previous.key != key {
+            return None;
+        }
+        usage::change_line(now.saturating_sub(previous.at), previous.left, focus.remaining)
+    });
+    write_memory(key, focus.remaining, now);
+    if let Ok(mut slot) = DELTA.lock() {
+        *slot = line.unwrap_or_default();
+    }
+}
+
+struct SavedNumber {
+    key: String,
+    left: u32,
+    at: i64,
+}
+
+fn memory_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("last.txt"))
+}
+
+fn read_memory() -> Option<SavedNumber> {
+    let text = std::fs::read_to_string(memory_path()?).ok()?;
+    let mut key = String::new();
+    let mut left = None;
+    let mut at = None;
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("pane=") {
+            key = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("left=") {
+            left = value.trim().parse().ok();
+        } else if let Some(value) = line.strip_prefix("at=") {
+            at = value.trim().parse().ok();
+        }
+    }
+    Some(SavedNumber { key, left: left?, at: at? })
+}
+
+fn write_memory(key: &str, left: u32, at: i64) {
+    let Some(path) = memory_path() else {
+        return;
+    };
+    let _ = std::fs::write(path, format!("pane={key}\nleft={left}\nat={at}\n"));
+}
+
+fn enable_glass(hwnd: HWND) {
+    let backdrop: i32 = 3;
+    let border: u32 = 0xFFFFFFFE;
+    let margins = MARGINS {
+        cxLeftWidth: -1,
+        cxRightWidth: -1,
+        cyTopHeight: -1,
+        cyBottomHeight: -1,
+    };
+    unsafe {
+        let _ = DwmSetWindowAttribute(hwnd, 38, &backdrop as *const i32 as *const c_void, 4);
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        let _ = DwmSetWindowAttribute(hwnd, 34, &border as *const u32 as *const c_void, 4);
+    }
+}
+
+unsafe fn blend_round(dest: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, radius: i32, rgba: [u8; 4], sheen: bool) {
+    if spot.w <= 1 || spot.h <= 1 {
+        return;
+    }
+    let width = spot.w as u32;
+    let height = spot.h as u32;
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    let radius = radius.max(0) as f32;
+    for y in 0..height {
+        for x in 0..width {
+            let cover = round_coverage(x as f32, y as f32, width as f32, height as f32, radius);
+            if cover <= 0.0 {
+                continue;
+            }
+            let (mut red, mut green, mut blue, mut alpha) = (rgba[0], rgba[1], rgba[2], rgba[3]);
+            if sheen && y < 22 {
+                let lift = ((22 - y) as u16 * 3).min(70) as u8;
+                red = red.saturating_add(lift);
+                green = green.saturating_add(lift);
+                blue = blue.saturating_add(lift);
+                alpha = alpha.saturating_add(lift / 3);
+            }
+            if cover < 0.9 {
+                red = 255;
+                green = 255;
+                blue = 255;
+                alpha = (200.0 * cover) as u8;
+            }
+            let alpha = (alpha as f32 * cover.min(1.0)) as u8;
+            let index = ((y * width + x) * 4) as usize;
+            pixels[index] = premul(blue, alpha);
+            pixels[index + 1] = premul(green, alpha);
+            pixels[index + 2] = premul(red, alpha);
+            pixels[index + 3] = alpha;
+        }
+    }
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: spot.w,
+            biHeight: -spot.h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0,
+            ..BITMAPINFOHEADER::default()
+        },
+        ..BITMAPINFO::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    let bitmap = CreateDIBSection(dest, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+    if bitmap.is_null() || bits.is_null() {
+        return;
+    }
+    std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u8, pixels.len());
+    let source = CreateCompatibleDC(dest);
+    let old = SelectObject(source, bitmap as HGDIOBJ);
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 255,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+    AlphaBlend(dest, spot.x, spot.y, spot.w, spot.h, source, 0, 0, spot.w, spot.h, blend);
+    SelectObject(source, old);
+    DeleteObject(bitmap as HGDIOBJ);
+    DeleteDC(source);
+}
+
+fn premul(channel: u8, alpha: u8) -> u8 {
+    ((channel as u16 * alpha as u16) / 255) as u8
+}
+
+fn round_coverage(x: f32, y: f32, width: f32, height: f32, radius: f32) -> f32 {
+    let px = x + 0.5;
+    let py = y + 0.5;
+    let half_w = width / 2.0;
+    let half_h = height / 2.0;
+    let radius = radius.min(half_w).min(half_h);
+    let qx = (px - half_w).abs() - (half_w - radius);
+    let qy = (py - half_h).abs() - (half_h - radius);
+    let outside = qx.max(0.0).hypot(qy.max(0.0));
+    let inside = qx.min(0.0).max(qy.min(0.0));
+    (0.6 - (outside + inside - radius)).clamp(0.0, 1.0)
 }
 
 fn wide(text: &str) -> Vec<u16> {

@@ -10,6 +10,23 @@ pub struct Snapshot {
     pub session_reset_after: Option<i64>,
     pub session_window_seconds: Option<i64>,
     pub weekly_window_seconds: Option<i64>,
+    pub weekly_reset_at: Option<i64>,
+    pub weekly_reset_after: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pane {
+    Session,
+    Week,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reading {
+    pub pane: Pane,
+    pub name: &'static str,
+    pub remaining: u32,
+    pub reset_at: Option<i64>,
+    pub reset_after: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +95,101 @@ pub fn window_name(seconds: Option<i64>, weekly_fallback: bool) -> &'static str 
         Some(value) if (518_400..=691_200).contains(&value) => "이번 주",
         None if weekly_fallback => "이번 주",
         _ => "이번 창",
+    }
+}
+
+pub fn readings(snapshot: &Snapshot) -> (Reading, Option<Reading>) {
+    let session_name = window_name(snapshot.session_window_seconds, false);
+    let session = Reading {
+        pane: Pane::Session,
+        name: session_name,
+        remaining: remaining_percent(snapshot.session_used),
+        reset_at: snapshot.session_reset_at,
+        reset_after: snapshot.session_reset_after,
+    };
+    let week = snapshot.weekly_used.map(|used| {
+        let mut name = window_name(snapshot.weekly_window_seconds, true);
+        if name == session_name {
+            name = "다른 창";
+        }
+        Reading {
+            pane: Pane::Week,
+            name,
+            remaining: remaining_percent(used),
+            reset_at: snapshot.weekly_reset_at,
+            reset_after: snapshot.weekly_reset_after,
+        }
+    });
+    (session, week)
+}
+
+pub fn focus_reading(snapshot: &Snapshot) -> Reading {
+    let (session, week) = readings(snapshot);
+    match week {
+        Some(week) if week.remaining < session.remaining => week,
+        _ => session,
+    }
+}
+
+pub fn hover_tip(snapshot: &Snapshot) -> String {
+    let (session, week) = readings(snapshot);
+    match week {
+        Some(week) => format!(
+            "Jusage · {} {}% · {} {}%",
+            session.name, session.remaining, week.name, week.remaining
+        ),
+        None => format!("Jusage · {} {}% 남음", session.name, session.remaining),
+    }
+}
+
+pub fn named_refill(name: &str, phrase: &str) -> String {
+    let topic = format!("{name}{}", particle(name));
+    if let Some(when) = phrase.strip_suffix("쯤 다시 채워져요") {
+        if when.is_empty() {
+            format!("{topic} 곧 다시 채워져요")
+        } else {
+            format!("{topic} {when}쯤 다시 채워져요")
+        }
+    } else if phrase == "곧 다시 채워져요" {
+        format!("{topic} 곧 다시 채워져요")
+    } else {
+        format!("{topic} {phrase}")
+    }
+}
+
+pub fn change_line(age_secs: i64, before: u32, now: u32) -> Option<String> {
+    if before == now {
+        return None;
+    }
+    let age = age_secs.max(0);
+    let when = if age < 60 {
+        "방금".to_string()
+    } else if age < 3_600 {
+        format!("{}분 전", (age / 60).max(1))
+    } else if age < 86_400 {
+        format!("{}시간 전", (age / 3_600).max(1))
+    } else if age < 86_400 * 2 {
+        "어제".to_string()
+    } else {
+        format!("{}일 전", (age / 86_400).max(2))
+    };
+    let (amount, verb) = if now < before {
+        (before - now, "줄었어요")
+    } else {
+        (now - before, "채워졌어요")
+    };
+    Some(format!("{when}보다 {amount}% {verb}"))
+}
+
+fn particle(name: &str) -> &'static str {
+    let Some(ch) = name.chars().last() else {
+        return "은";
+    };
+    let code = ch as u32;
+    if (0xAC00..=0xD7A3).contains(&code) && (code - 0xAC00) % 28 == 0 {
+        "는"
+    } else {
+        "은"
     }
 }
 
@@ -162,6 +274,8 @@ pub fn parse_usage(headers: &[(&str, &str)], body: &str) -> Option<Snapshot> {
         session_reset_after: window.and_then(|value| unix_field(value, "reset_after_seconds")),
         session_window_seconds: window.and_then(|value| unix_field(value, "limit_window_seconds")),
         weekly_window_seconds: weekly_window.and_then(|value| unix_field(value, "limit_window_seconds")),
+        weekly_reset_at: weekly_window.and_then(|value| unix_field(value, "reset_at")),
+        weekly_reset_after: weekly_window.and_then(|value| unix_field(value, "reset_after_seconds")),
     })
 }
 
@@ -241,7 +355,7 @@ pub fn fetch_usage(home: &Path) -> Result<Snapshot, FetchFail> {
         .get("https://chatgpt.com/backend-api/wham/usage")
         .set("Authorization", &format!("Bearer {token}"))
         .set("Accept", "application/json")
-        .set("User-Agent", "tray-left/0.1");
+        .set("User-Agent", "jusage/0.1");
     if let Some(account) = account.as_deref() {
         request = request.set("ChatGPT-Account-Id", account);
     }
@@ -403,5 +517,36 @@ mod tests {
         assert_eq!(window_name(None, false), "이번 창");
         assert_eq!(window_name(None, true), "이번 주");
         assert_eq!(window_name(Some(3_600), false), "이번 창");
+    }
+
+    #[test]
+    fn the_lower_window_becomes_the_focus() {
+        let plus = r#"{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000},"secondary_window":{"used_percent":80,"limit_window_seconds":604800,"reset_at":2000600000}}}"#;
+        let tight_week = parse_usage(&[], plus).unwrap();
+        assert_eq!(focus_reading(&tight_week).pane, Pane::Week);
+        assert_eq!(focus_reading(&tight_week).remaining, 20);
+        assert_eq!(
+            hover_tip(&tight_week),
+            "Jusage · 5시간 80% · 이번 주 20%"
+        );
+        let session_only = parse_usage(&[], r#"{"plan_type":"prolite","rate_limit":{"primary_window":{"used_percent":42,"limit_window_seconds":604800}}}"#).unwrap();
+        assert_eq!(focus_reading(&session_only).name, "이번 주");
+        assert_eq!(focus_reading(&session_only).remaining, 58);
+    }
+
+    #[test]
+    fn refill_names_the_window_in_one_line() {
+        let now = Civil { year: 2026, month: 10, day: 27, hour: 15, minute: 0 };
+        let today = refill_phrase(now, Civil { hour: 21, minute: 0, ..now });
+        assert_eq!(named_refill("5시간", &today), "5시간은 오늘 오후 9시쯤 다시 채워져요");
+        assert_eq!(named_refill("이번 주", "곧 다시 채워져요"), "이번 주는 곧 다시 채워져요");
+    }
+
+    #[test]
+    fn change_line_says_how_the_number_moved() {
+        assert_eq!(change_line(3 * 3600, 58, 48), Some("3시간 전보다 10% 줄었어요".into()));
+        assert_eq!(change_line(30, 40, 55), Some("방금보다 15% 채워졌어요".into()));
+        assert_eq!(change_line(90, 40, 40), None);
+        assert_eq!(change_line(86_400 + 10, 10, 30), Some("어제보다 20% 채워졌어요".into()));
     }
 }
