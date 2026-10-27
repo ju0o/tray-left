@@ -84,20 +84,22 @@ pub fn mood_rgb(remaining: Option<u32>) -> [u8; 3] {
     mood_rgb_on(remaining, true)
 }
 
-/// Light colors stay deep so they read on a white card.
-/// Dark colors are brighter so the same mark survives a dark taskbar.
+/// Status ink only. Comfort is teal, caution is amber, and the last sliver is red.
+/// Unknown stays in the slate family so a missing number does not look like a warning.
 pub fn mood_rgb_on(remaining: Option<u32>, light: bool) -> [u8; 3] {
     if light {
         match remaining {
             Some(value) if value > 20 => [15, 118, 110],
-            Some(_) => [180, 83, 9],
-            None => [140, 140, 140],
+            Some(value) if value > 5 => [180, 83, 9],
+            Some(_) => [176, 42, 55],
+            None => [62, 77, 104],
         }
     } else {
         match remaining {
             Some(value) if value > 20 => [45, 212, 191],
-            Some(_) => [251, 191, 36],
-            None => [186, 186, 186],
+            Some(value) if value > 5 => [251, 191, 36],
+            Some(_) => [226, 104, 116],
+            None => [152, 169, 196],
         }
     }
 }
@@ -1551,10 +1553,12 @@ mod tests {
         assert_eq!(mood_word(5), "거의 없음");
         assert_eq!(mood_rgb(Some(58)), [15, 118, 110]);
         assert_eq!(mood_rgb(Some(12)), [180, 83, 9]);
-        assert_eq!(mood_rgb(None), [140, 140, 140]);
+        assert_eq!(mood_rgb(Some(5)), [176, 42, 55]);
+        assert_eq!(mood_rgb(None), [62, 77, 104]);
         assert_eq!(mood_rgb_on(Some(58), false), [45, 212, 191]);
         assert_eq!(mood_rgb_on(Some(12), false), [251, 191, 36]);
-        assert_eq!(mood_rgb_on(None, false), [186, 186, 186]);
+        assert_eq!(mood_rgb_on(Some(5), false), [226, 104, 116]);
+        assert_eq!(mood_rgb_on(None, false), [152, 169, 196]);
     }
 
     #[test]

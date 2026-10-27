@@ -219,10 +219,15 @@ struct Palette {
     ink: u32,
     muted: u32,
     soft: u32,
+    depth: [u8; 4],
     plate: [u8; 4],
-    tile: [u8; 4],
+    card: [u8; 4],
+    edge: [u8; 4],
+    hot: [u8; 4],
+    hover: [u8; 4],
     track: [u8; 4],
     line: [u8; 4],
+    charge: [u8; 3],
 }
 
 static VIEW: Mutex<View> = Mutex::new(View::Loading);
@@ -1160,7 +1165,7 @@ fn card_for(view: &View, dpi: i32) -> Card {
                 h: tile_h,
             };
         }
-        y += tile_h + s(12);
+        y += tile_h + s(18);
     }
     let pace_caption_box;
     let pace_box;
@@ -1251,7 +1256,7 @@ fn card_for(view: &View, dpi: i32) -> Card {
         }
     }
     if !facts.is_empty() {
-        y += s(8);
+        y += s(14);
     }
     let days_rule;
     let days_label;
@@ -1357,7 +1362,7 @@ fn card_for(view: &View, dpi: i32) -> Card {
             w: content_w,
             h: lines * s(22) + s(4),
         };
-        y += spot.h + s(8);
+        y += spot.h + s(16);
         Some(spot)
     };
     let status_box = if status.is_empty() {
@@ -1775,7 +1780,7 @@ unsafe fn place(hwnd: HWND) {
         card.height,
         SWP_NOZORDER | SWP_NOACTIVATE,
     );
-    let radius = scale(26, dpi);
+    let radius = scale(32, dpi);
     let region = CreateRoundRectRgn(0, 0, card.width + 1, card.height + 1, radius, radius);
     if !region.is_null() {
         SetWindowRgn(hwnd, region, TRUE);
@@ -2097,6 +2102,7 @@ unsafe fn paint(hwnd: HWND) {
     let card = card_for(&view, window_dpi(hwnd));
     let fonts = fonts_for(window_dpi(hwnd));
     let palette = palette_now();
+    let outer = px(&card, 32);
     blend_round(
         hdc,
         Spot {
@@ -2105,10 +2111,25 @@ unsafe fn paint(hwnd: HWND) {
             w: card.width,
             h: card.height,
         },
-        px(&card, 26),
-        palette.plate,
-        true,
+        outer,
+        palette.depth,
+        false,
     );
+    let inset = px(&card, 7);
+    if card.width > inset * 2 + 24 && card.height > inset * 2 + 24 {
+        blend_round(
+            hdc,
+            Spot {
+                x: inset,
+                y: inset,
+                w: card.width - inset * 2,
+                h: card.height - inset * 2,
+            },
+            px(&card, 26),
+            palette.plate,
+            true,
+        );
+    }
     paint_card(hdc, &card, &fonts, &palette);
     EndPaint(hwnd, &ps);
 }
@@ -2208,7 +2229,7 @@ unsafe fn paint_card(
         blend_round(hdc, rail, rail.w, [red, green, blue, 255], false);
     }
     if card.hero_big {
-        paint_meter(hdc, card, fonts, accent);
+        paint_meter(hdc, card, fonts, palette.ink);
     } else {
         text_in(
             hdc,
@@ -2269,27 +2290,17 @@ unsafe fn paint_card(
         );
     }
     if let Some(spot) = card.charge_bar {
-        let gray = if palette.light {
-            [140, 138, 132]
-        } else {
-            [206, 206, 202]
-        };
-        paint_capsule(hdc, spot, card.charge_fill, gray, palette.track);
+        paint_capsule(hdc, spot, card.charge_fill, palette.charge, palette.track);
     }
 
     for tile in &card.tiles {
-        let radius = px(card, 14);
-        let border = if tile.hot {
-            let [r, g, b] = color_rgb(tile.accent);
-            [r, g, b, 170]
-        } else {
-            palette.line
-        };
+        let radius = px(card, 18);
+        let border = if tile.hot { palette.hot } else { palette.edge };
         stroke_panel(
             hdc,
             tile.spot,
             radius,
-            palette.tile,
+            palette.card,
             border,
             px(card, 1).max(2),
         );
@@ -2341,6 +2352,17 @@ unsafe fn paint_card(
             percent as f32 / 100.0,
             color_rgb(tile.accent),
             palette.track,
+        );
+    }
+    if let Some(well) = detail_well(card) {
+        let spot = inflate_spot(well, px(card, 8), card.width);
+        stroke_panel(
+            hdc,
+            spot,
+            px(card, 18),
+            palette.card,
+            palette.edge,
+            px(card, 1).max(1),
         );
     }
     if let Some(spot) = card.pace_caption_box {
@@ -2428,7 +2450,11 @@ unsafe fn paint_card(
     }
     let center = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
     for col in &card.days {
-        let name_color = if col.today { accent } else { palette.muted };
+        let name_color = if col.today {
+            palette.ink
+        } else {
+            palette.muted
+        };
         text_in(
             hdc,
             fonts.label,
@@ -2438,7 +2464,7 @@ unsafe fn paint_card(
             center,
         );
         if let Some(tick) = col.tick {
-            let [red, green, blue] = color_rgb(accent);
+            let [red, green, blue] = color_rgb(palette.ink);
             blend_round(hdc, tick, tick.h, [red, green, blue, 255], false);
         }
         text_in(
@@ -2451,8 +2477,6 @@ unsafe fn paint_card(
         );
         let close_color = if col.close == "·" {
             palette.muted
-        } else if col.today {
-            accent
         } else {
             palette.ink
         };
@@ -2487,21 +2511,15 @@ unsafe fn paint_card(
     }
     for row in &card.rows {
         let hot = hover == row.id;
-        let fill = if hot {
-            if palette.light {
-                [23, 23, 23, 16]
-            } else {
-                [255, 255, 255, 24]
-            }
-        } else {
-            palette.tile
-        };
-        let line = if palette.light {
-            [23, 23, 23, 48]
-        } else {
-            palette.line
-        };
-        stroke_panel(hdc, row.spot, px(card, 12), fill, line, px(card, 1).max(1));
+        let fill = if hot { palette.hover } else { palette.card };
+        stroke_panel(
+            hdc,
+            row.spot,
+            px(card, 16),
+            fill,
+            palette.edge,
+            px(card, 1).max(1),
+        );
         let label_w = row.spot.w * 42 / 100;
         text_in(
             hdc,
@@ -2530,27 +2548,16 @@ unsafe fn paint_card(
     }
     if card.refresh.w > 0 {
         let refresh_fill = if hover == HIT_REFRESH {
-            if palette.light {
-                [23, 23, 23, 18]
-            } else {
-                [255, 255, 255, 28]
-            }
-        } else if palette.light {
-            [255, 255, 255, 28]
+            palette.hover
         } else {
-            [255, 255, 255, 10]
-        };
-        let refresh_line = if palette.light {
-            [23, 23, 23, 72]
-        } else {
-            [236, 236, 232, 80]
+            palette.card
         };
         stroke_panel(
             hdc,
             card.refresh,
             card.refresh.h / 2,
             refresh_fill,
-            refresh_line,
+            palette.edge,
             px(card, 1).max(1),
         );
         text_in(
@@ -2653,6 +2660,69 @@ unsafe fn paint_capsule(
     blend_pixels(hdc, spot, &pixels);
 }
 
+fn detail_well(card: &Card) -> Option<Spot> {
+    let mut spots = Vec::new();
+    for spot in [
+        card.pace_caption_box,
+        card.pace_box,
+        card.cycle_box,
+        card.ledger_rule,
+        card.days_rule,
+        card.days_label,
+        card.story_box,
+    ] {
+        if let Some(spot) = spot {
+            spots.push(spot);
+        }
+    }
+    for fact in &card.facts {
+        spots.push(fact.label);
+        if let Some(rule) = fact.rule {
+            spots.push(rule);
+        }
+    }
+    for col in &card.days {
+        spots.push(col.name_box);
+        spots.push(col.close_box);
+    }
+    union_spots(&spots)
+}
+
+fn union_spots(spots: &[Spot]) -> Option<Spot> {
+    let mut acc: Option<Spot> = None;
+    for spot in spots {
+        acc = Some(match acc {
+            None => *spot,
+            Some(have) => {
+                let left = have.x.min(spot.x);
+                let top = have.y.min(spot.y);
+                let right = (have.x + have.w).max(spot.x + spot.w);
+                let bottom = (have.y + have.h).max(spot.y + spot.h);
+                Spot {
+                    x: left,
+                    y: top,
+                    w: right - left,
+                    h: bottom - top,
+                }
+            }
+        });
+    }
+    acc
+}
+
+fn inflate_spot(spot: Spot, pad: i32, limit: i32) -> Spot {
+    let x = (spot.x - pad).max(pad);
+    let y = (spot.y - pad).max(0);
+    let right = (spot.x + spot.w + pad).min(limit - pad);
+    let bottom = spot.y + spot.h + pad;
+    Spot {
+        x,
+        y,
+        w: (right - x).max(1),
+        h: (bottom - y).max(1),
+    }
+}
+
 unsafe fn stroke_panel(
     hdc: windows_sys::Win32::Graphics::Gdi::HDC,
     spot: Spot,
@@ -2752,14 +2822,14 @@ unsafe fn fonts_for(dpi: i32) -> Fonts {
 unsafe fn make_fonts(dpi: i32) -> Fonts {
     Fonts {
         dpi,
-        brand: font(scale(12, dpi), FW_SEMIBOLD, "Cascadia Mono"),
+        brand: font(scale(13, dpi), FW_SEMIBOLD, "Cascadia Mono"),
         hero: font(scale(64, dpi), FW_SEMIBOLD, "Cascadia Mono"),
         unit: font(scale(20, dpi), FW_SEMIBOLD, "Cascadia Mono"),
         figure: font(scale(22, dpi), FW_SEMIBOLD, "Cascadia Mono"),
         lead: font(scale(16, dpi), FW_SEMIBOLD, "Segoe UI"),
         label: font(scale(14, dpi), FW_SEMIBOLD, "Segoe UI"),
         body: font(scale(15, dpi), FW_NORMAL, "Segoe UI"),
-        quiet: font(scale(13, dpi), FW_NORMAL, "Segoe UI"),
+        quiet: font(scale(14, dpi), FW_NORMAL, "Segoe UI"),
         digit: font(scale(15, dpi), FW_SEMIBOLD, "Cascadia Mono"),
     }
 }
@@ -3093,7 +3163,7 @@ unsafe fn draw_font_number(pixels: &mut [u8], size: u32, number: u32) -> bool {
         for x in 0..side {
             let alpha = halo[(y * side + x) as usize];
             if alpha > 0 {
-                over_pixel(pixels, size, x as u32, y as u32, [28, 32, 34], alpha);
+                over_pixel(pixels, size, x as u32, y as u32, [17, 21, 34], alpha);
             }
         }
     }
@@ -3101,7 +3171,7 @@ unsafe fn draw_font_number(pixels: &mut [u8], size: u32, number: u32) -> bool {
         for x in 0..side {
             let alpha = cover[(y * side + x) as usize];
             if alpha > 0 {
-                over_pixel(pixels, size, x as u32, y as u32, [248, 248, 246], alpha);
+                over_pixel(pixels, size, x as u32, y as u32, [220, 227, 239], alpha);
             }
         }
     }
@@ -3758,24 +3828,34 @@ fn palette_now() -> Palette {
     if theme_is_light() {
         Palette {
             light: true,
-            ink: 0x00171717,
-            muted: 0x005A5A5A,
-            soft: 0x00E8E6E2,
-            plate: [252, 250, 246, 196],
-            tile: [255, 255, 255, 210],
-            track: [222, 218, 210, 255],
-            line: [40, 38, 34, 48],
+            ink: 0x0022_1511,
+            muted: 0x0068_4D3E,
+            soft: 0x00F0_E2D9,
+            depth: [0xC5, 0xD0, 0xE2, 214],
+            plate: [0xF4, 0xF7, 0xFB, 234],
+            card: [255, 255, 255, 230],
+            edge: [0x98, 0xA9, 0xC4, 180],
+            hot: [0x3E, 0x4D, 0x68, 160],
+            hover: [0xE4, 0xEB, 0xF5, 236],
+            track: [0xD5, 0xDC, 0xEA, 255],
+            line: [0x53, 0x66, 0x84, 70],
+            charge: [0x53, 0x66, 0x84],
         }
     } else {
         Palette {
             light: false,
-            ink: 0x00F0F2F2,
-            muted: 0x00A8A8A0,
-            soft: 0x00323A42,
-            plate: [14, 16, 20, 184],
-            tile: [255, 255, 255, 16],
-            track: [255, 255, 255, 36],
-            line: [236, 236, 232, 48],
+            ink: 0x00EF_E3DC,
+            muted: 0x00C4_A998,
+            soft: 0x0064_483A,
+            depth: [0x11, 0x15, 0x22, 216],
+            plate: [0x1E, 0x26, 0x3B, 232],
+            card: [0x30, 0x3D, 0x59, 236],
+            edge: [0x53, 0x66, 0x84, 170],
+            hot: [0x98, 0xA9, 0xC4, 210],
+            hover: [0x3A, 0x48, 0x64, 236],
+            track: [0x11, 0x15, 0x22, 230],
+            line: [0x53, 0x66, 0x84, 80],
+            charge: [0x98, 0xA9, 0xC4],
         }
     }
 }
@@ -4132,19 +4212,16 @@ unsafe fn blend_round(
             if cover <= 0.0 {
                 continue;
             }
-            let (mut red, mut green, mut blue, mut alpha) = (rgba[0], rgba[1], rgba[2], rgba[3]);
-            if sheen && y < 22 {
-                let lift = ((22 - y) as u16 * 3).min(70) as u8;
-                red = red.saturating_add(lift);
-                green = green.saturating_add(lift);
-                blue = blue.saturating_add(lift);
-                alpha = alpha.saturating_add(lift / 3);
-            }
-            if cover < 0.9 {
-                red = 255;
-                green = 255;
-                blue = 255;
-                alpha = (200.0 * cover) as u8;
+            let (mut red, mut green, mut blue, alpha) = (rgba[0], rgba[1], rgba[2], rgba[3]);
+            if sheen {
+                let span = (height as f32 * 0.38).max(18.0);
+                if (y as f32) < span {
+                    let t = 1.0 - (y as f32 / span);
+                    let lift = (t * t * 26.0) as i16;
+                    red = (red as i16 + lift).clamp(0, 255) as u8;
+                    green = (green as i16 + lift).clamp(0, 255) as u8;
+                    blue = (blue as i16 + lift + lift / 4).clamp(0, 255) as u8;
+                }
             }
             let alpha = (alpha as f32 * cover.min(1.0)) as u8;
             let index = ((y * width + x) * 4) as usize;

@@ -160,7 +160,7 @@ fn stamp_number(pixels: &mut [u8], size: u32, number: u32) {
                 y + step,
                 *digit,
                 scale,
-                [28, 32, 34],
+                [17, 21, 34],
             );
         }
         for (dx, dy) in [
@@ -173,9 +173,9 @@ fn stamp_number(pixels: &mut [u8], size: u32, number: u32) {
             (-1, 1),
             (1, 1),
         ] {
-            stamp_glyph(pixels, size, x + dx, y + dy, *digit, scale, [28, 32, 34]);
+            stamp_glyph(pixels, size, x + dx, y + dy, *digit, scale, [17, 21, 34]);
         }
-        stamp_glyph(pixels, size, x, y, *digit, scale, [248, 248, 246]);
+        stamp_glyph(pixels, size, x, y, *digit, scale, [220, 227, 239]);
     }
 }
 
