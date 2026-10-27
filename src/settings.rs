@@ -60,12 +60,244 @@ impl Default for Settings {
     }
 }
 
+pub fn profile_dir(local_app_data: &Path, isolated: bool) -> PathBuf {
+    local_app_data.join(if isolated { "JusageIsolated" } else { "Jusage" })
+}
+
 pub fn data_dir(local_app_data: &Path) -> PathBuf {
-    local_app_data.join("Jusage").join("data")
+    profile_dir(local_app_data, false).join("data")
 }
 
 pub fn settings_path(local_app_data: &Path) -> PathBuf {
-    local_app_data.join("Jusage").join("settings.txt")
+    profile_dir(local_app_data, false).join("settings.txt")
+}
+
+/// What a launch is allowed to change. The product path still copies home and may touch startup.
+/// An isolated launch keeps a different profile, mutex, and window, and it does not write the registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StartupGuard {
+    pub copy_home: bool,
+    pub touch_registry: bool,
+    pub mutex: &'static str,
+    pub window_class: &'static str,
+    pub profile: &'static str,
+}
+
+pub fn startup_guard(isolated: bool) -> StartupGuard {
+    if isolated {
+        StartupGuard {
+            copy_home: false,
+            touch_registry: false,
+            mutex: r"Local\JusageIsolated",
+            window_class: "JusageIsolatedWindow",
+            profile: "JusageIsolated",
+        }
+    } else {
+        StartupGuard {
+            copy_home: true,
+            touch_registry: true,
+            mutex: r"Local\JusageSingle",
+            window_class: "JusageWindow",
+            profile: "Jusage",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Launch {
+    pub isolated: bool,
+    pub preview_dir: Option<PathBuf>,
+    pub preview_missing: bool,
+}
+
+pub fn parse_launch(args: impl IntoIterator<Item = impl AsRef<str>>) -> Launch {
+    let args: Vec<String> = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_string())
+        .collect();
+    let mut isolated = false;
+    let mut preview_dir = None;
+    let mut preview_missing = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--isolated" => isolated = true,
+            "--preview" => {
+                isolated = true;
+                match args.get(index + 1) {
+                    Some(next) if !next.is_empty() && !next.starts_with('-') => {
+                        preview_dir = Some(PathBuf::from(next));
+                        index += 1;
+                    }
+                    _ => preview_missing = true,
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    Launch {
+        isolated,
+        preview_dir,
+        preview_missing,
+    }
+}
+
+/// A preview folder must not be the installed profile. `JusageIsolated` is a different name.
+/// The path is made absolute on paper first, so `..`, a trailing dot, and `Jusage\data\..` cannot sneak through.
+/// A relative path stays refused here. Windows resolves it with `GetFullPathName` before this check.
+pub fn isolates_from_product(path: &Path) -> bool {
+    match windows_absolute(path) {
+        Some(full) => !path_has_component(&full, "Jusage"),
+        None => false,
+    }
+}
+
+/// `true` when `path` is the installed profile or a folder inside it.
+pub fn path_is_within(path: &str, root: &str) -> bool {
+    let Some(path) = windows_absolute(Path::new(path)) else {
+        return false;
+    };
+    let Some(root) = windows_absolute(Path::new(root)) else {
+        return false;
+    };
+    let path = path.to_ascii_lowercase();
+    let root = root.trim_end_matches('\\').to_ascii_lowercase();
+    path == root || path.starts_with(&(root + "\\"))
+}
+
+/// Absolute Windows path with `.`, `..`, and trailing dots or spaces removed.
+/// `None` means the path still depends on the current folder (`..`, `name`, or `C:name`).
+pub fn windows_absolute(path: &Path) -> Option<String> {
+    let text = path.to_string_lossy().replace('/', "\\");
+    let text = strip_extended_prefix(&text);
+    let (root, rest) = split_windows_root(&text)?;
+    let mut parts = Vec::new();
+    for raw in rest.split('\\') {
+        if raw.is_empty() || raw == "." {
+            continue;
+        }
+        if raw == ".." {
+            parts.pop();
+            continue;
+        }
+        let cleaned = trim_win32_tail(raw);
+        if cleaned.is_empty() || cleaned == "." {
+            continue;
+        }
+        if cleaned == ".." {
+            parts.pop();
+            continue;
+        }
+        parts.push(cleaned);
+    }
+    let mut full = root;
+    for part in parts {
+        if !full.ends_with('\\') {
+            full.push('\\');
+        }
+        full.push_str(&part);
+    }
+    Some(full)
+}
+
+fn path_has_component(path: &str, name: &str) -> bool {
+    path.split(['\\', '/'])
+        .any(|part| part.eq_ignore_ascii_case(name))
+}
+
+fn strip_extended_prefix(text: &str) -> String {
+    if text.len() >= 8 {
+        let head = &text[..8];
+        if head.eq_ignore_ascii_case(r"\\?\UNC\") || head.eq_ignore_ascii_case(r"\\.\UNC\") {
+            return format!(r"\\{}", &text[8..]);
+        }
+    }
+    if text.len() >= 4 {
+        let head = &text[..4];
+        if head.eq_ignore_ascii_case(r"\\?\") || head.eq_ignore_ascii_case(r"\\.\") {
+            return text[4..].to_string();
+        }
+    }
+    text.to_string()
+}
+
+fn split_windows_root(text: &str) -> Option<(String, &str)> {
+    if let Some(rest) = text.strip_prefix(r"\\") {
+        let mut parts = rest.splitn(3, '\\');
+        let server = parts.next().unwrap_or("");
+        let share = parts.next().unwrap_or("");
+        if server.is_empty() || share.is_empty() {
+            return None;
+        }
+        let tail = parts.next().unwrap_or("");
+        return Some((format!(r"\\{server}\{share}"), tail));
+    }
+    let mut chars = text.chars();
+    let drive = chars.next()?;
+    if !drive.is_ascii_alphabetic() || chars.next() != Some(':') || !text[2..].starts_with('\\') {
+        return None;
+    }
+    Some((format!("{}:\\", drive.to_ascii_uppercase()), &text[3..]))
+}
+
+fn trim_win32_tail(raw: &str) -> String {
+    raw.trim_end_matches([' ', '.']).to_string()
+}
+
+/// A long reset date wraps under the day so a half-width tile does not cut the clock.
+pub fn tile_clock(line: &str) -> String {
+    match line.split_once("일 ") {
+        Some((date, time)) if date.contains('월') => format!("{date}일\n{time}"),
+        _ => line.to_string(),
+    }
+}
+
+/// The first screen hides pace, the ledger, and the week strip until the detail row is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PopupFold {
+    pub pace: bool,
+    pub ledger: bool,
+    pub days: bool,
+}
+
+pub fn popup_fold(detail_open: bool) -> PopupFold {
+    PopupFold {
+        pace: detail_open,
+        ledger: detail_open,
+        days: detail_open,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkArea {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+pub fn clamp_popup(
+    mut x: i32,
+    mut y: i32,
+    width: i32,
+    height: i32,
+    work: WorkArea,
+    margin: i32,
+) -> (i32, i32) {
+    if x + width > work.right - margin {
+        x = work.right - width - margin;
+    }
+    if x < work.left + margin {
+        x = work.left + margin;
+    }
+    if y + height > work.bottom - margin {
+        y = work.bottom - height - margin;
+    }
+    if y < work.top + margin {
+        y = work.top + margin;
+    }
+    (x, y)
 }
 
 pub fn parse_settings(text: &str) -> Settings {
@@ -352,5 +584,140 @@ mod tests {
             "네트워크에 연결하지 못했어요. 잠시 뒤 다시 확인해 주세요."
         );
         assert!(data_dir(Path::new(r"C:\Users\user\AppData\Local")).ends_with("data"));
+    }
+
+    #[test]
+    fn isolated_launch_leaves_the_installed_profile_alone() {
+        let root = Path::new(r"C:\Users\user\AppData\Local");
+        let product = profile_dir(root, false);
+        let isolated = profile_dir(root, true);
+        assert_eq!(
+            product.file_name().and_then(|name| name.to_str()),
+            Some("Jusage")
+        );
+        assert_eq!(
+            isolated.file_name().and_then(|name| name.to_str()),
+            Some("JusageIsolated")
+        );
+        assert!(!isolated.starts_with(&product));
+        assert_eq!(data_dir(root), product.join("data"));
+        assert_eq!(settings_path(root), product.join("settings.txt"));
+
+        let product_boot = startup_guard(false);
+        assert!(product_boot.copy_home);
+        assert!(product_boot.touch_registry);
+        assert_eq!(product_boot.mutex, r"Local\JusageSingle");
+        assert_eq!(product_boot.window_class, "JusageWindow");
+        assert_eq!(product_boot.profile, "Jusage");
+
+        let qa = startup_guard(true);
+        assert!(!qa.copy_home);
+        assert!(!qa.touch_registry);
+        assert_eq!(qa.mutex, r"Local\JusageIsolated");
+        assert_eq!(qa.window_class, "JusageIsolatedWindow");
+        assert_ne!(qa.mutex, product_boot.mutex);
+        assert_ne!(qa.window_class, product_boot.window_class);
+
+        let plain = parse_launch(Vec::<String>::new());
+        assert!(!plain.isolated);
+        assert!(plain.preview_dir.is_none());
+        let flagged = parse_launch(["--isolated"]);
+        assert!(flagged.isolated);
+        assert!(flagged.preview_dir.is_none());
+        let preview = parse_launch(["--preview", r"C:\Users\user\src\jusage-preview"]);
+        assert!(preview.isolated);
+        assert!(preview.preview_dir.is_some());
+        assert!(isolates_from_product(
+            preview.preview_dir.as_deref().unwrap()
+        ));
+        assert!(!isolates_from_product(Path::new(
+            r"C:\Users\user\AppData\Local\Jusage"
+        )));
+        assert!(!isolates_from_product(Path::new(
+            r"C:\Users\user\AppData\Local\Jusage\data"
+        )));
+        assert!(parse_launch(["--preview"]).preview_missing);
+    }
+
+    #[test]
+    fn a_preview_path_cannot_fold_back_onto_the_installed_profile() {
+        let product = r"C:\Users\user\AppData\Local\Jusage";
+        assert!(!isolates_from_product(Path::new(
+            r"C:\Users\user\AppData\Local\Jusage."
+        )));
+        assert!(!isolates_from_product(Path::new(
+            r"C:\Users\user\AppData\Local\Jusage "
+        )));
+        assert!(!isolates_from_product(Path::new(
+            r"C:\Users\user\AppData\Local\Jusage\data\.."
+        )));
+        assert!(!isolates_from_product(Path::new(r"..")));
+        assert!(!isolates_from_product(Path::new(r"C:Jusage")));
+        assert!(!isolates_from_product(Path::new(
+            r"\\?\C:\Users\user\AppData\Local\Jusage\data"
+        )));
+        assert!(isolates_from_product(Path::new(
+            r"C:\Users\user\AppData\Local\Jusage\..\jusage-preview"
+        )));
+        assert!(isolates_from_product(Path::new(
+            r"C:\Users\user\AppData\Local\JusageIsolated"
+        )));
+        assert!(path_is_within(
+            r"C:\Users\user\AppData\Local\Jusage\data",
+            product
+        ));
+        assert!(path_is_within(
+            r"C:\Users\user\AppData\Local\Jusage.",
+            product
+        ));
+        assert!(!path_is_within(
+            r"C:\Users\user\AppData\Local\JusageIsolated",
+            product
+        ));
+        assert!(!path_is_within(
+            r"C:\Users\user\src\jusage-preview",
+            product
+        ));
+        assert_eq!(
+            tile_clock("10월 30일 오전 5시 12분"),
+            "10월 30일\n오전 5시 12분"
+        );
+        assert_eq!(tile_clock("오늘 오전 8시 39분"), "오늘 오전 8시 39분");
+        assert_eq!(tile_clock("내일 오전 6시"), "내일 오전 6시");
+        assert_eq!(tile_clock("지금 채워져요"), "지금 채워져요");
+    }
+
+    #[test]
+    fn the_first_screen_hides_pace_and_history_until_detail_opens() {
+        let closed = popup_fold(false);
+        assert!(!closed.pace);
+        assert!(!closed.ledger);
+        assert!(!closed.days);
+        let open = popup_fold(true);
+        assert!(open.pace && open.ledger && open.days);
+    }
+
+    #[test]
+    fn a_popup_on_the_other_monitor_stays_inside_that_work_area() {
+        let right = WorkArea {
+            left: 1920,
+            top: 0,
+            right: 3840,
+            bottom: 1080,
+        };
+        let (x, y) = clamp_popup(1800, -40, 400, 700, right, 8);
+        assert_eq!(x, 1928);
+        assert_eq!(y, 8);
+        let (x, y) = clamp_popup(3600, 900, 400, 700, right, 8);
+        assert_eq!(x, 3432);
+        assert_eq!(y, 372);
+        let left = WorkArea {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let (x, y) = clamp_popup(20, 20, 400, 500, left, 8);
+        assert_eq!((x, y), (20, 20));
     }
 }

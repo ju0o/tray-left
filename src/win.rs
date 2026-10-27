@@ -7,8 +7,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use windows_sys::Win32::Foundation::{
-    GetLastError, COLORREF, ERROR_ALREADY_EXISTS, FALSE, FILETIME, HWND, LPARAM, RECT, SIZE,
-    SYSTEMTIME, TRUE, WPARAM,
+    CloseHandle, GetLastError, COLORREF, ERROR_ALREADY_EXISTS, FALSE, FILETIME, HWND,
+    INVALID_HANDLE_VALUE, LPARAM, RECT, SIZE, SYSTEMTIME, TRUE, WPARAM,
 };
 use windows_sys::Win32::Graphics::Dwm::{
     DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -24,7 +24,11 @@ use windows_sys::Win32::Graphics::Gdi::{
     DT_SINGLELINE, DT_TOP, DT_VCENTER, DT_WORDBREAK, FW_NORMAL, FW_SEMIBOLD, HFONT, HGDIOBJ,
     LOGPIXELSX, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
-use windows_sys::Win32::Storage::FileSystem::FileTimeToLocalFileTime;
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FileTimeToLocalFileTime, GetFinalPathNameByHandleW, GetFullPathNameW,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING, VOLUME_NAME_DOS,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegDeleteKeyValueW, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW,
@@ -68,6 +72,7 @@ const HIT_CLOSE: u8 = 1;
 const HIT_REFRESH: u8 = 2;
 const HIT_QUIT: u8 = 3;
 const HIT_SETTINGS: u8 = 4;
+const HIT_DETAIL: u8 = 5;
 const ROW_SOURCE: u8 = 10;
 const ROW_DISTRO: u8 = 11;
 const ROW_FOCUS: u8 = 12;
@@ -187,6 +192,9 @@ struct Card {
     pace: String,
     cycle_box: Option<Spot>,
     cycle: String,
+    detail_box: Option<Spot>,
+    detail_label: String,
+    detail_hint: String,
     tiles: Vec<Tile>,
     rows: Vec<SettingRow>,
     status_box: Option<Spot>,
@@ -247,6 +255,9 @@ static CHECK_GEN: AtomicU64 = AtomicU64::new(0);
 static FRESH_AT: AtomicI64 = AtomicI64::new(0);
 static LAST_KIND: AtomicU8 = AtomicU8::new(0);
 static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
+static DETAIL_OPEN: AtomicBool = AtomicBool::new(false);
+static ISOLATED: AtomicBool = AtomicBool::new(false);
+static PROFILE_OVERRIDE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 static CONFIG: Mutex<Option<crate::settings::Settings>> = Mutex::new(None);
 static LAST_SIG: Mutex<String> = Mutex::new(String::new());
 static DISTROS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -270,11 +281,139 @@ static COUNT: Mutex<CountUp> = Mutex::new(CountUp {
 });
 static SHOWN: AtomicI32 = AtomicI32::new(-1);
 
+/// Refuse a preview folder that resolves onto the installed profile, before any directory is created.
+fn guarded_preview_dir(raw: &std::path::Path) -> Option<std::path::PathBuf> {
+    let named = match win32_full_path(raw) {
+        Some(path) => path,
+        None => crate::settings::windows_absolute(raw)?,
+    };
+    if !crate::settings::isolates_from_product(std::path::Path::new(&named)) {
+        return None;
+    }
+    let resolved = resolve_reparse(&named)?;
+    if !crate::settings::isolates_from_product(std::path::Path::new(&resolved)) {
+        return None;
+    }
+    let product = installed_product_dir()?;
+    if crate::settings::path_is_within(&resolved, &product.to_string_lossy()) {
+        return None;
+    }
+    Some(std::path::PathBuf::from(resolved))
+}
+
+fn installed_product_dir() -> Option<std::path::PathBuf> {
+    let local = std::env::var("LOCALAPPDATA").ok()?;
+    let product = crate::settings::profile_dir(std::path::Path::new(&local), false);
+    let named = win32_full_path(&product).unwrap_or_else(|| product.to_string_lossy().into_owned());
+    let resolved = resolve_reparse(&named).unwrap_or(named);
+    Some(std::path::PathBuf::from(resolved))
+}
+
+fn win32_full_path(path: &std::path::Path) -> Option<String> {
+    let wide_path = wide(&path.to_string_lossy());
+    let mut buffer = vec![0u16; 1024];
+    let written = unsafe {
+        GetFullPathNameW(
+            wide_path.as_ptr(),
+            buffer.len() as u32,
+            buffer.as_mut_ptr(),
+            std::ptr::null_mut(),
+        )
+    };
+    if written == 0 || written as usize >= buffer.len() {
+        return None;
+    }
+    let text = String::from_utf16_lossy(&buffer[..written as usize]);
+    crate::settings::windows_absolute(std::path::Path::new(&text))
+}
+
+fn resolve_reparse(absolute: &str) -> Option<String> {
+    let absolute = crate::settings::windows_absolute(std::path::Path::new(absolute))?;
+    let mut cursor = std::path::PathBuf::from(&absolute);
+    let mut missing = Vec::new();
+    while !cursor.exists() {
+        let name = cursor.file_name()?.to_os_string();
+        if !cursor.pop() || cursor.as_os_str().is_empty() {
+            return Some(absolute);
+        }
+        missing.push(name);
+    }
+    let mut resolved = final_path_of(&cursor)?;
+    for name in missing.iter().rev() {
+        if !resolved.ends_with('\\') {
+            resolved.push('\\');
+        }
+        resolved.push_str(&name.to_string_lossy());
+    }
+    crate::settings::windows_absolute(std::path::Path::new(&resolved))
+}
+
+fn final_path_of(path: &std::path::Path) -> Option<String> {
+    let wide_path = wide(&path.to_string_lossy());
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut buffer = vec![0u16; 1024];
+    let written = unsafe {
+        GetFinalPathNameByHandleW(
+            handle,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            VOLUME_NAME_DOS,
+        )
+    };
+    unsafe {
+        CloseHandle(handle);
+    }
+    if written == 0 || written as usize >= buffer.len() {
+        return None;
+    }
+    let text = String::from_utf16_lossy(&buffer[..written as usize]);
+    crate::settings::windows_absolute(std::path::Path::new(&text))
+}
+
 pub fn run() {
-    settle_home();
+    let launch = crate::settings::parse_launch(std::env::args().skip(1));
+    let preview = match launch.preview_dir.as_ref() {
+        Some(dir) => match guarded_preview_dir(dir) {
+            Some(safe) => Some(safe),
+            None => return,
+        },
+        None if launch.preview_missing => return,
+        None => None,
+    };
+    ISOLATED.store(launch.isolated, Ordering::SeqCst);
+    if let Some(dir) = preview {
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let Some(dir) = guarded_preview_dir(&dir) else {
+            return;
+        };
+        if let Ok(mut slot) = PROFILE_OVERRIDE.lock() {
+            *slot = Some(dir.clone());
+        }
+        unsafe { render_previews(&dir) };
+        return;
+    }
+    let guard = crate::settings::startup_guard(launch.isolated);
+    if guard.copy_home {
+        settle_home();
+    }
     unsafe {
         let _ = set_process_dpi();
-        let class_name = wide("JusageWindow");
+        let class_name = wide(guard.window_class);
         let title = wide("Jusage");
         let instance = GetModuleHandleW(std::ptr::null());
         let class = WNDCLASSW {
@@ -292,7 +431,7 @@ pub fn run() {
         if RegisterClassW(&class) == 0 {
             return;
         }
-        let mutex_name = wide("Local\\JusageSingle");
+        let mutex_name = wide(guard.mutex);
         let mutex = CreateMutexW(std::ptr::null(), FALSE, mutex_name.as_ptr());
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let existing = FindWindowW(class_name.as_ptr(), std::ptr::null());
@@ -339,12 +478,18 @@ pub fn run() {
         ICON_SLOT.store(icon as usize, Ordering::SeqCst);
         assign_window_icon(hwnd, icon);
         add_tray(hwnd, icon, "Jusage 확인 중");
-        boot_autostart();
+        if guard.touch_registry {
+            boot_autostart();
+        } else {
+            let _ = ensure_config();
+        }
         apply_view();
         let (tx, rx) = mpsc::channel();
         let _ = WAKE.set(tx);
         std::thread::spawn(move || worker(rx));
-        std::thread::spawn(promote_loop);
+        if guard.touch_registry {
+            std::thread::spawn(promote_loop);
+        }
 
         let mut msg = windows_sys::Win32::UI::WindowsAndMessaging::MSG::default();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
@@ -819,6 +964,7 @@ fn card_for(view: &View, dpi: i32) -> Card {
     let mut day_slots: Vec<usage::DaySlot> = Vec::new();
     let mut plan = String::new();
     let mut status = String::new();
+    let mut detail_hint = String::new();
     let mut hero_big = false;
     let mut remaining = 0u32;
     let light = theme_is_light();
@@ -911,6 +1057,7 @@ fn card_for(view: &View, dpi: i32) -> Card {
             }
             let reset_at = reset_unix(focus.reset_at, focus.reset_after, now);
             let pace_samples = pace_for(pane_key);
+            detail_hint = usage::pace_brief(&pace_samples, now, focus.remaining);
             pace_lines.push(usage::pace_line(
                 &pace_samples,
                 now,
@@ -937,20 +1084,6 @@ fn card_for(view: &View, dpi: i32) -> Card {
             if let Some(week) = week {
                 let mut session_tile = tile_from(session, light, reset_clock(session, now));
                 let mut week_tile = tile_from(week, light, reset_clock(week, now));
-                let session_brief = usage::tile_brief(
-                    true,
-                    &usage::pace_brief(&pace_for("session"), now, session.remaining),
-                );
-                let week_brief = usage::tile_brief(
-                    true,
-                    &usage::pace_brief(&pace_for("week"), now, week.remaining),
-                );
-                if !session_brief.is_empty() {
-                    session_tile.mood = session_brief;
-                }
-                if !week_brief.is_empty() {
-                    week_tile.mood = week_brief;
-                }
                 session_tile.hot = focus.pane == Pane::Session;
                 week_tile.hot = focus.pane == Pane::Week;
                 tiles.push(session_tile);
@@ -1093,19 +1226,22 @@ fn card_for(view: &View, dpi: i32) -> Card {
         y += spot.h + s(8);
         Some(spot)
     };
+    let top_rule = None;
+    if !tiles.is_empty() {
+        let gap = s(10);
+        let tile_w = (content_w - gap) / tiles.len() as i32;
+        let tile_h = s(152);
+        for (index, tile) in tiles.iter_mut().enumerate() {
+            tile.spot = Spot {
+                x: content_x + (tile_w + gap) * index as i32,
+                y,
+                w: tile_w,
+                h: tile_h,
+            };
+        }
+        y += tile_h + s(16);
+    }
     let has_charge = !charge.is_empty() || !refill.is_empty();
-    let top_rule = if has_charge || !tiles.is_empty() {
-        let spot = Spot {
-            x: content_x,
-            y,
-            w: content_w,
-            h: rule_h,
-        };
-        y += rule_h + s(16);
-        Some(spot)
-    } else {
-        None
-    };
     let charge_box;
     let charge_bar;
     let refill_box;
@@ -1115,30 +1251,30 @@ fn card_for(view: &View, dpi: i32) -> Card {
         refill_box = None;
     } else {
         let row_h = s(24);
-        let phrase_w = content_w * 58 / 100;
         charge_box = if charge.is_empty() {
             None
         } else {
-            Some(Spot {
+            let spot = Spot {
                 x: content_x,
                 y,
-                w: phrase_w,
+                w: content_w,
                 h: row_h,
-            })
+            };
+            y += row_h + s(2);
+            Some(spot)
         };
         refill_box = if refill.is_empty() {
             None
         } else {
-            Some(Spot {
-                x: content_x + phrase_w,
+            let spot = Spot {
+                x: content_x,
                 y,
-                w: content_w - phrase_w,
-                h: row_h,
-            })
+                w: content_w,
+                h: s(22),
+            };
+            y += spot.h + s(8);
+            Some(spot)
         };
-        if charge_box.is_some() || refill_box.is_some() {
-            y += row_h + s(8);
-        }
         charge_bar = if show_charge {
             let spot = Spot {
                 x: content_x,
@@ -1151,25 +1287,27 @@ fn card_for(view: &View, dpi: i32) -> Card {
         } else {
             None
         };
-        y += s(16);
+        y += s(14);
     }
-    if !tiles.is_empty() {
-        let gap = s(10);
-        let tile_w = (content_w - gap) / tiles.len() as i32;
-        let tile_h = s(128);
-        for (index, tile) in tiles.iter_mut().enumerate() {
-            tile.spot = Spot {
-                x: content_x + (tile_w + gap) * index as i32,
-                y,
-                w: tile_w,
-                h: tile_h,
-            };
-        }
-        y += tile_h + s(18);
+    let status_box = if status.is_empty() {
+        None
+    } else {
+        let spot = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: s(22),
+        };
+        y += spot.h + s(12);
+        Some(spot)
+    };
+    let fold = crate::settings::popup_fold(DETAIL_OPEN.load(Ordering::Relaxed));
+    if fold.pace || fold.ledger || fold.days {
+        y += s(12);
     }
     let pace_caption_box;
     let pace_box;
-    if pace.is_empty() {
+    if !fold.pace || pace.is_empty() {
         pace_caption_box = None;
         pace_box = None;
     } else {
@@ -1191,7 +1329,7 @@ fn card_for(view: &View, dpi: i32) -> Card {
         pace_caption_box = Some(caption);
         pace_box = Some(body);
     }
-    let cycle_box = if cycle.is_empty() {
+    let cycle_box = if !fold.pace || cycle.is_empty() {
         None
     } else {
         let lines = wrapped_line_count(&cycle, content_w, s(15));
@@ -1205,7 +1343,7 @@ fn card_for(view: &View, dpi: i32) -> Card {
         Some(spot)
     };
     let mut facts = Vec::new();
-    let ledger_rule = if fact_rows.is_empty() {
+    let ledger_rule = if !fold.ledger || fact_rows.is_empty() {
         None
     } else {
         let spot = Spot {
@@ -1217,42 +1355,44 @@ fn card_for(view: &View, dpi: i32) -> Card {
         y += rule_h + s(12);
         Some(spot)
     };
-    let fact_count = fact_rows.len();
-    for (index, (name, text)) in fact_rows.into_iter().enumerate() {
-        let label_w = content_w * 30 / 100;
-        let row_h = s(32);
-        let last = index + 1 == fact_count;
-        let rule = if last {
-            None
-        } else {
-            Some(Spot {
-                x: content_x,
-                y: y + row_h + s(4),
-                w: content_w,
-                h: rule_h,
-            })
-        };
-        facts.push(Fact {
-            label: Spot {
-                x: content_x,
-                y,
-                w: label_w,
-                h: row_h,
-            },
-            value: Spot {
-                x: content_x + label_w,
-                y,
-                w: content_w - label_w,
-                h: row_h,
-            },
-            rule,
-            name,
-            text,
-            wrap: false,
-        });
-        y += row_h + s(4);
-        if !last {
-            y += rule_h + s(4);
+    if fold.ledger {
+        let fact_count = fact_rows.len();
+        for (index, (name, text)) in fact_rows.into_iter().enumerate() {
+            let label_w = content_w * 30 / 100;
+            let row_h = s(32);
+            let last = index + 1 == fact_count;
+            let rule = if last {
+                None
+            } else {
+                Some(Spot {
+                    x: content_x,
+                    y: y + row_h + s(4),
+                    w: content_w,
+                    h: rule_h,
+                })
+            };
+            facts.push(Fact {
+                label: Spot {
+                    x: content_x,
+                    y,
+                    w: label_w,
+                    h: row_h,
+                },
+                value: Spot {
+                    x: content_x + label_w,
+                    y,
+                    w: content_w - label_w,
+                    h: row_h,
+                },
+                rule,
+                name,
+                text,
+                wrap: false,
+            });
+            y += row_h + s(4);
+            if !last {
+                y += rule_h + s(4);
+            }
         }
     }
     if !facts.is_empty() {
@@ -1263,7 +1403,7 @@ fn card_for(view: &View, dpi: i32) -> Card {
     let days_open_label;
     let days_close_label;
     let mut days = Vec::new();
-    if day_slots.is_empty() {
+    if day_slots.is_empty() || !fold.days {
         days_rule = None;
         days_label = None;
         days_open_label = None;
@@ -1352,7 +1492,7 @@ fn card_for(view: &View, dpi: i32) -> Card {
         y = close_y + num_h + s(6);
     }
     let story = usage::week_story(&day_slots);
-    let story_box = if story.is_empty() {
+    let story_box = if !fold.days || story.is_empty() {
         None
     } else {
         let lines = wrapped_line_count(&story, content_w, s(15));
@@ -1365,18 +1505,27 @@ fn card_for(view: &View, dpi: i32) -> Card {
         y += spot.h + s(16);
         Some(spot)
     };
-    let status_box = if status.is_empty() {
-        None
-    } else {
-        let lines = wrapped_line_count(&status, content_w, s(15));
+    if fold.pace || fold.ledger || fold.days {
+        y += s(8);
+    }
+    let detail_open = DETAIL_OPEN.load(Ordering::Relaxed);
+    let (detail_box, detail_label, detail_hint) = if matches!(view, View::Ready(_)) {
         let spot = Spot {
             x: content_x,
             y,
             w: content_w,
-            h: lines * s(20) + s(2),
+            h: s(44),
         };
-        y += spot.h + s(8);
-        Some(spot)
+        y += spot.h + s(12);
+        let label = if detail_open { "접기" } else { "자세히" };
+        let hint = if detail_open {
+            String::new()
+        } else {
+            detail_hint
+        };
+        (Some(spot), label.to_string(), hint)
+    } else {
+        (None, String::new(), String::new())
     };
     let bottom_rule = Some(Spot {
         x: content_x,
@@ -1435,6 +1584,9 @@ fn card_for(view: &View, dpi: i32) -> Card {
         pace,
         cycle_box,
         cycle,
+        detail_box,
+        detail_label,
+        detail_hint,
         tiles,
         rows: Vec::new(),
         status_box,
@@ -1479,7 +1631,7 @@ fn reset_clock(reading: Reading, now: i64) -> String {
     let (Some(today), Some(moment)) = (local_civil(now), local_civil(at)) else {
         return String::new();
     };
-    usage::clock_when(today, moment)
+    crate::settings::tile_clock(&usage::clock_when(today, moment))
 }
 
 fn settings_card(dpi: i32) -> Card {
@@ -1677,6 +1829,9 @@ fn settings_card(dpi: i32) -> Card {
         pace: String::new(),
         cycle_box: None,
         cycle: String::new(),
+        detail_box: None,
+        detail_label: String::new(),
+        detail_hint: String::new(),
         tiles: Vec::new(),
         rows,
         status_box: None,
@@ -1734,7 +1889,7 @@ unsafe fn place(hwnd: HWND) {
     };
     let card = card_for(&view, dpi);
     let margin = scale(8, dpi);
-    let (mut x, mut y, work) = if let Some(anchor) = tray_anchor(hwnd) {
+    let (x, y, work) = if let Some(anchor) = tray_anchor(hwnd) {
         let monitor = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -1759,18 +1914,19 @@ unsafe fn place(hwnd: HWND) {
         let y = work.bottom - card.height - margin + motion_offset();
         (x, y, work)
     };
-    if x + card.width > work.right - margin {
-        x = work.right - card.width - margin;
-    }
-    if x < work.left + margin {
-        x = work.left + margin;
-    }
-    if y + card.height > work.bottom - margin {
-        y = work.bottom - card.height - margin;
-    }
-    if y < work.top + margin {
-        y = work.top + margin;
-    }
+    let (x, y) = crate::settings::clamp_popup(
+        x,
+        y,
+        card.width,
+        card.height,
+        crate::settings::WorkArea {
+            left: work.left,
+            top: work.top,
+            right: work.right,
+            bottom: work.bottom,
+        },
+        margin,
+    );
     SetWindowPos(
         hwnd,
         std::ptr::null_mut(),
@@ -1965,6 +2121,10 @@ fn activate(hwnd: HWND, hit: u8) {
             hide_panel(hwnd);
         },
         HIT_REFRESH => request_refresh(),
+        HIT_DETAIL => {
+            DETAIL_OPEN.store(!DETAIL_OPEN.load(Ordering::Relaxed), Ordering::Relaxed);
+            relayout(hwnd);
+        }
         HIT_SETTINGS => {
             SETTINGS_OPEN.store(true, Ordering::Relaxed);
             spawn_distro_reload();
@@ -2077,6 +2237,11 @@ fn hit_at(hwnd: HWND, x: i32, y: i32) -> u8 {
     if !SETTINGS_OPEN.load(Ordering::Relaxed) && card.gear.w > 0 && card.gear.contains(x, y) {
         return HIT_SETTINGS;
     }
+    if let Some(spot) = card.detail_box {
+        if spot.contains(x, y) {
+            return HIT_DETAIL;
+        }
+    }
     for row in &card.rows {
         if row.spot.contains(x, y) {
             return row.id;
@@ -2094,15 +2259,21 @@ fn hit_at(hwnd: HWND, x: i32, y: i32) -> u8 {
 unsafe fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
+    let dpi = window_dpi(hwnd);
     let view = VIEW
         .lock()
         .ok()
         .map(|view| view.clone())
         .unwrap_or(View::Loading);
-    let card = card_for(&view, window_dpi(hwnd));
-    let fonts = fonts_for(window_dpi(hwnd));
+    let card = card_for(&view, dpi);
+    paint_prepared(hdc, &card, dpi);
+    EndPaint(hwnd, &ps);
+}
+
+unsafe fn paint_prepared(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, dpi: i32) {
+    let fonts = fonts_for(dpi);
     let palette = palette_now();
-    let outer = px(&card, 32);
+    let outer = px(card, 32);
     blend_round(
         hdc,
         Spot {
@@ -2130,8 +2301,7 @@ unsafe fn paint(hwnd: HWND) {
             true,
         );
     }
-    paint_card(hdc, &card, &fonts, &palette);
-    EndPaint(hwnd, &ps);
+    paint_card(hdc, card, &fonts, &palette);
 }
 
 unsafe fn paint_card(
@@ -2286,7 +2456,7 @@ unsafe fn paint_card(
             palette.muted,
             spot.rect(),
             &card.refill,
-            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
     }
     if let Some(spot) = card.charge_bar {
@@ -2335,9 +2505,9 @@ unsafe fn paint_card(
                 hdc,
                 fonts.quiet,
                 palette.muted,
-                rect(inner_x, tile.spot.y + px(card, 88), inner_w, px(card, 18)),
+                rect(inner_x, tile.spot.y + px(card, 88), inner_w, px(card, 36)),
                 &tile.clock,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+                DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
             );
         }
         let percent = tile.value.trim_end_matches('%').parse::<u32>().unwrap_or(0);
@@ -2542,6 +2712,45 @@ unsafe fn paint_card(
             &row.value,
             DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
+    }
+    if let Some(spot) = card.detail_box {
+        let fill = if hover == HIT_DETAIL {
+            palette.hover
+        } else {
+            palette.card
+        };
+        stroke_panel(
+            hdc,
+            spot,
+            px(card, 16),
+            fill,
+            palette.edge,
+            px(card, 1).max(1),
+        );
+        let label_w = spot.w * 28 / 100;
+        text_in(
+            hdc,
+            fonts.label,
+            palette.ink,
+            rect(spot.x + px(card, 14), spot.y, label_w, spot.h),
+            &card.detail_label,
+            left,
+        );
+        if !card.detail_hint.is_empty() {
+            text_in(
+                hdc,
+                fonts.quiet,
+                palette.muted,
+                rect(
+                    spot.x + label_w,
+                    spot.y,
+                    spot.w - label_w - px(card, 14),
+                    spot.h,
+                ),
+                &card.detail_hint,
+                DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            );
+        }
     }
     if let Some(rule) = card.bottom_rule {
         blend_round(hdc, rule, 0, palette.line, false);
@@ -3252,14 +3461,31 @@ fn legacy_beside(name: &str) -> Option<std::path::PathBuf> {
 }
 
 /// User data lives under LocalAppData. An older file beside the exe is copied once and left in place.
+fn isolated_now() -> bool {
+    ISOLATED.load(Ordering::Relaxed)
+}
+
+fn profile_root() -> Option<std::path::PathBuf> {
+    if let Ok(slot) = PROFILE_OVERRIDE.lock() {
+        if let Some(path) = slot.clone() {
+            return Some(path);
+        }
+    }
+    let local = std::env::var("LOCALAPPDATA").ok()?;
+    Some(crate::settings::profile_dir(
+        std::path::Path::new(&local),
+        isolated_now(),
+    ))
+}
+
 fn data_file(name: &str) -> Option<std::path::PathBuf> {
-    let preferred = std::env::var("LOCALAPPDATA").ok().and_then(|local| {
-        let dir = crate::settings::data_dir(std::path::Path::new(&local));
+    let preferred = profile_root().and_then(|root| {
+        let dir = root.join("data");
         std::fs::create_dir_all(&dir).ok()?;
         Some(dir.join(name))
     });
     if let Some(path) = preferred {
-        if !path.exists() {
+        if !path.exists() && !isolated_now() {
             if let Some(old) = legacy_beside(name) {
                 if old.is_file() && old != path {
                     let _ = std::fs::copy(&old, &path);
@@ -3268,7 +3494,11 @@ fn data_file(name: &str) -> Option<std::path::PathBuf> {
         }
         return Some(path);
     }
-    legacy_beside(name)
+    if isolated_now() {
+        None
+    } else {
+        legacy_beside(name)
+    }
 }
 
 fn settle_home() {
@@ -3403,8 +3633,7 @@ fn delete_run_key() {
 }
 
 fn settings_file_path() -> Option<std::path::PathBuf> {
-    let local = std::env::var("LOCALAPPDATA").ok()?;
-    Some(crate::settings::settings_path(std::path::Path::new(&local)))
+    Some(profile_root()?.join("settings.txt"))
 }
 
 fn read_settings_file() -> Option<crate::settings::Settings> {
@@ -3464,6 +3693,9 @@ fn boot_autostart() {
 }
 
 fn apply_autostart(pref: crate::settings::AutostartPref) {
+    if !crate::settings::startup_guard(isolated_now()).touch_registry {
+        return;
+    }
     match crate::settings::autostart_action(pref) {
         crate::settings::AutostartAction::Leave => {}
         crate::settings::AutostartAction::Enable => write_run_key(),
@@ -3828,34 +4060,94 @@ fn palette_now() -> Palette {
     if theme_is_light() {
         Palette {
             light: true,
-            ink: 0x0022_1511,
-            muted: 0x0068_4D3E,
+            ink: crate::look::LIGHT_INK.colorref(),
+            muted: crate::look::LIGHT_MUTED.colorref(),
             soft: 0x00F0_E2D9,
-            depth: [0xC5, 0xD0, 0xE2, 214],
-            plate: [0xF4, 0xF7, 0xFB, 234],
+            depth: [
+                crate::look::LIGHT_DEPTH.r,
+                crate::look::LIGHT_DEPTH.g,
+                crate::look::LIGHT_DEPTH.b,
+                214,
+            ],
+            plate: [
+                crate::look::LIGHT_PLATE.r,
+                crate::look::LIGHT_PLATE.g,
+                crate::look::LIGHT_PLATE.b,
+                234,
+            ],
             card: [255, 255, 255, 230],
-            edge: [0x98, 0xA9, 0xC4, 180],
-            hot: [0x3E, 0x4D, 0x68, 160],
+            edge: [
+                crate::look::MUTED.r,
+                crate::look::MUTED.g,
+                crate::look::MUTED.b,
+                180,
+            ],
+            hot: [
+                crate::look::LIGHT_MUTED.r,
+                crate::look::LIGHT_MUTED.g,
+                crate::look::LIGHT_MUTED.b,
+                160,
+            ],
             hover: [0xE4, 0xEB, 0xF5, 236],
             track: [0xD5, 0xDC, 0xEA, 255],
-            line: [0x53, 0x66, 0x84, 70],
-            charge: [0x53, 0x66, 0x84],
+            line: [
+                crate::look::EDGE.r,
+                crate::look::EDGE.g,
+                crate::look::EDGE.b,
+                70,
+            ],
+            charge: crate::look::LIGHT_CHARGE.rgb(),
         }
     } else {
         Palette {
             light: false,
-            ink: 0x00EF_E3DC,
-            muted: 0x00C4_A998,
+            ink: crate::look::INK.colorref(),
+            muted: crate::look::MUTED.colorref(),
             soft: 0x0064_483A,
-            depth: [0x11, 0x15, 0x22, 216],
-            plate: [0x1E, 0x26, 0x3B, 232],
-            card: [0x30, 0x3D, 0x59, 236],
-            edge: [0x53, 0x66, 0x84, 170],
-            hot: [0x98, 0xA9, 0xC4, 210],
+            depth: [
+                crate::look::DEPTH.r,
+                crate::look::DEPTH.g,
+                crate::look::DEPTH.b,
+                216,
+            ],
+            plate: [
+                crate::look::PLATE.r,
+                crate::look::PLATE.g,
+                crate::look::PLATE.b,
+                232,
+            ],
+            card: [
+                crate::look::CARD.r,
+                crate::look::CARD.g,
+                crate::look::CARD.b,
+                236,
+            ],
+            edge: [
+                crate::look::EDGE.r,
+                crate::look::EDGE.g,
+                crate::look::EDGE.b,
+                170,
+            ],
+            hot: [
+                crate::look::MUTED.r,
+                crate::look::MUTED.g,
+                crate::look::MUTED.b,
+                210,
+            ],
             hover: [0x3A, 0x48, 0x64, 236],
-            track: [0x11, 0x15, 0x22, 230],
-            line: [0x53, 0x66, 0x84, 80],
-            charge: [0x98, 0xA9, 0xC4],
+            track: [
+                crate::look::DEPTH.r,
+                crate::look::DEPTH.g,
+                crate::look::DEPTH.b,
+                230,
+            ],
+            line: [
+                crate::look::EDGE.r,
+                crate::look::EDGE.g,
+                crate::look::EDGE.b,
+                80,
+            ],
+            charge: crate::look::DARK_CHARGE.rgb(),
         }
     }
 }
@@ -4304,4 +4596,502 @@ unsafe fn set_process_dpi() -> i32 {
     windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
         windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     )
+}
+
+struct ShotNote {
+    name: &'static str,
+    ok: bool,
+    width: i32,
+    height: i32,
+}
+
+unsafe fn render_previews(dir: &std::path::Path) {
+    let _ = set_process_dpi();
+    let started = Instant::now();
+    let screen = screen_dpi();
+    if let Ok(mut slot) = CONFIG.lock() {
+        *slot = Some(crate::settings::Settings {
+            source: crate::settings::Source::Windows,
+            distro: String::new(),
+            codex_home: String::new(),
+            focus: crate::settings::FocusPref::Auto,
+            autostart: crate::settings::AutostartPref::Off,
+            theme: crate::settings::ThemePref::Dark,
+        });
+    }
+    TRUST_SEEN.store(true, Ordering::Relaxed);
+    TRUST_LOADED.store(true, Ordering::Relaxed);
+    DETAIL_OPEN.store(false, Ordering::Relaxed);
+    SETTINGS_OPEN.store(false, Ordering::Relaxed);
+    if let Ok(mut notice) = NOTICE.lock() {
+        notice.clear();
+    }
+    let now = now_unix();
+    FRESH_AT.store(now.saturating_sub(5), Ordering::Relaxed);
+    let week = mock_week(now);
+    let both = mock_both(now);
+    let mut shots = Vec::new();
+    shots.push(preview_scene(
+        dir,
+        "dark-ready.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-ready.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        true,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dark-two.bmp",
+        &View::Ready(both.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-two.bmp",
+        &View::Ready(both.clone()),
+        96,
+        false,
+        false,
+        true,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dpi-100.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dpi-125.bmp",
+        &View::Ready(week.clone()),
+        120,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dpi-150.bmp",
+        &View::Ready(week.clone()),
+        144,
+        false,
+        false,
+        false,
+    ));
+    FRESH_AT.store(now.saturating_sub(700), Ordering::Relaxed);
+    shots.push(preview_scene(
+        dir,
+        "dark-stale.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-stale.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        true,
+    ));
+    FRESH_AT.store(now.saturating_sub(5), Ordering::Relaxed);
+    if let Ok(mut notice) = NOTICE.lock() {
+        *notice = crate::settings::fail_note(1).to_string();
+    }
+    shots.push(preview_scene(
+        dir,
+        "dark-error.bmp",
+        &View::Failed(1),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-error.bmp",
+        &View::Failed(1),
+        96,
+        false,
+        false,
+        true,
+    ));
+    if let Ok(mut notice) = NOTICE.lock() {
+        notice.clear();
+    }
+    shots.push(preview_scene(
+        dir,
+        "dark-login.bmp",
+        &View::NeedLogin,
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-login.bmp",
+        &View::NeedLogin,
+        96,
+        false,
+        false,
+        true,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dark-settings.bmp",
+        &View::Ready(week.clone()),
+        96,
+        true,
+        false,
+        false,
+    ));
+    set_preview_source(true);
+    shots.push(preview_scene(
+        dir,
+        "light-settings-wsl.bmp",
+        &View::Ready(week.clone()),
+        96,
+        true,
+        false,
+        true,
+    ));
+    set_preview_source(false);
+    TRUST_SEEN.store(false, Ordering::Relaxed);
+    shots.push(preview_scene(
+        dir,
+        "dark-first.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    TRUST_SEEN.store(true, Ordering::Relaxed);
+    write_preview_history(now);
+    shots.push(preview_scene(
+        dir,
+        "dark-hint.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dark-detail.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        true,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-detail.bmp",
+        &View::Ready(both),
+        96,
+        false,
+        true,
+        true,
+    ));
+    save_tray_icon(dir, "tray-16.bmp", 16, 58);
+    save_tray_icon(dir, "tray-32.bmp", 32, 58);
+    save_tray_icon(dir, "tray-16-x4.bmp", 16, 58);
+    let (working, peak) = working_set();
+    let mut body = format!(
+        "mode=preview\nscreen_dpi={screen}\nworking_set={working}\npeak_working_set={peak}\nelapsed_ms={}\ncopy_home=false\nregistry=false\n",
+        started.elapsed().as_millis()
+    );
+    for shot in &shots {
+        body.push_str(&format!(
+            "{} ok={} {}x{}\n",
+            shot.name, shot.ok as u8, shot.width, shot.height
+        ));
+    }
+    let _ = std::fs::write(dir.join("measure.txt"), body);
+}
+
+fn mock_week(now: i64) -> Snapshot {
+    Snapshot {
+        plan: "Pro 100".into(),
+        session_used: 42.0,
+        weekly_used: None,
+        session_reset_at: Some(now + 3 * 3600 + 12 * 60),
+        session_reset_after: None,
+        session_window_seconds: Some(7 * 24 * 3600),
+        weekly_window_seconds: None,
+        weekly_reset_at: None,
+        weekly_reset_after: None,
+    }
+}
+
+fn mock_both(now: i64) -> Snapshot {
+    Snapshot {
+        plan: "Plus".into(),
+        session_used: 42.0,
+        weekly_used: Some(18.0),
+        session_reset_at: Some(now + 2 * 3600 + 5 * 60),
+        session_reset_after: None,
+        session_window_seconds: Some(5 * 3600),
+        weekly_window_seconds: Some(7 * 24 * 3600),
+        weekly_reset_at: Some(now + 2 * 24 * 3600),
+        weekly_reset_after: None,
+    }
+}
+
+fn set_preview_source(wsl: bool) {
+    let Ok(mut slot) = CONFIG.lock() else {
+        return;
+    };
+    let Some(cfg) = slot.as_mut() else {
+        return;
+    };
+    if wsl {
+        cfg.source = crate::settings::Source::Wsl;
+        cfg.distro = "Ubuntu".to_string();
+    } else {
+        cfg.source = crate::settings::Source::Windows;
+        cfg.distro.clear();
+    }
+}
+
+fn write_preview_history(now: i64) {
+    let Some(today) = local_civil(now) else {
+        return;
+    };
+    let today_key = format!("{:04}-{:02}-{:02}", today.year, today.month, today.day);
+    let mut days = String::new();
+    if let Some(day) = local_civil(now - 86_400) {
+        let key = format!("{:04}-{:02}-{:02}", day.year, day.month, day.day);
+        days.push_str(&format!("session {key} 80 70 70\n"));
+    }
+    if let Some(day) = local_civil(now - 2 * 86_400) {
+        let key = format!("{:04}-{:02}-{:02}", day.year, day.month, day.day);
+        days.push_str(&format!("session {key} 90 80 78\n"));
+    }
+    days.push_str(&format!("session {today_key} 70 58 58\n"));
+    if let Some(path) = data_file("days.txt") {
+        let _ = std::fs::write(path, days);
+    }
+    if let Some(path) = data_file("day.txt") {
+        let _ = std::fs::write(path, format!("day={today_key}\npane=session\nopen=70\n"));
+    }
+    if let Some(path) = data_file("cycle.txt") {
+        let _ = std::fs::write(path, "session 0 80 58 58\n");
+    }
+    if let Some(path) = data_file("pace.txt") {
+        let _ = std::fs::write(
+            path,
+            format!("session {} 70\nsession {} 58\n", now - 3600, now - 120),
+        );
+    }
+}
+
+unsafe fn preview_scene(
+    dir: &std::path::Path,
+    name: &'static str,
+    view: &View,
+    dpi: i32,
+    settings: bool,
+    detail: bool,
+    light: bool,
+) -> ShotNote {
+    SETTINGS_OPEN.store(settings, Ordering::Relaxed);
+    DETAIL_OPEN.store(detail, Ordering::Relaxed);
+    if let Ok(mut slot) = CONFIG.lock() {
+        if let Some(cfg) = slot.as_mut() {
+            cfg.theme = if light {
+                crate::settings::ThemePref::Light
+            } else {
+                crate::settings::ThemePref::Dark
+            };
+        }
+    }
+    let card = card_for(view, dpi);
+    let ok = paint_to_file(&dir.join(name), &card, dpi);
+    ShotNote {
+        name,
+        ok,
+        width: card.width,
+        height: card.height,
+    }
+}
+
+unsafe fn paint_to_file(path: &std::path::Path, card: &Card, dpi: i32) -> bool {
+    if card.width <= 0 || card.height <= 0 {
+        return false;
+    }
+    let screen = GetDC(std::ptr::null_mut());
+    let mem = CreateCompatibleDC(screen);
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: card.width,
+            biHeight: -card.height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0,
+            ..BITMAPINFOHEADER::default()
+        },
+        ..BITMAPINFO::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    let bitmap = CreateDIBSection(
+        screen,
+        &info,
+        DIB_RGB_COLORS,
+        &mut bits,
+        std::ptr::null_mut(),
+        0,
+    );
+    if bitmap.is_null() || bits.is_null() || mem.is_null() {
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as HGDIOBJ);
+        }
+        if !mem.is_null() {
+            DeleteDC(mem);
+        }
+        if !screen.is_null() {
+            ReleaseDC(std::ptr::null_mut(), screen);
+        }
+        return false;
+    }
+    let count = (card.width as usize) * (card.height as usize) * 4;
+    {
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u8, count);
+        for chunk in pixels.chunks_exact_mut(4) {
+            chunk[0] = 18;
+            chunk[1] = 16;
+            chunk[2] = 14;
+            chunk[3] = 255;
+        }
+    }
+    let old = SelectObject(mem, bitmap as HGDIOBJ);
+    paint_prepared(mem, card, dpi);
+    let copy = std::slice::from_raw_parts(bits as *const u8, count).to_vec();
+    SelectObject(mem, old);
+    DeleteObject(bitmap as HGDIOBJ);
+    DeleteDC(mem);
+    if !screen.is_null() {
+        ReleaseDC(std::ptr::null_mut(), screen);
+    }
+    write_topdown_bgra_bmp(path, card.width, card.height, &copy)
+}
+
+fn save_tray_icon(dir: &std::path::Path, name: &str, size: u32, remaining: u32) {
+    let pixels = crate::icon::remaining_icon(size, remaining, [45, 212, 191], true);
+    let scaled = if name.ends_with("x4.bmp") {
+        scale_rgba(&pixels, size, 4)
+    } else {
+        rgba_to_bgra(&pixels)
+    };
+    let side = if name.ends_with("x4.bmp") {
+        size.saturating_mul(4)
+    } else {
+        size
+    };
+    let _ = write_topdown_bgra_bmp(&dir.join(name), side as i32, side as i32, &scaled);
+}
+
+fn rgba_to_bgra(pixels: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; pixels.len()];
+    let mut index = 0;
+    while index + 3 < pixels.len() {
+        out[index] = pixels[index + 2];
+        out[index + 1] = pixels[index + 1];
+        out[index + 2] = pixels[index];
+        out[index + 3] = pixels[index + 3];
+        index += 4;
+    }
+    out
+}
+
+fn scale_rgba(pixels: &[u8], size: u32, factor: u32) -> Vec<u8> {
+    let side = size.saturating_mul(factor);
+    let mut out = vec![0u8; (side * side * 4) as usize];
+    for y in 0..side {
+        for x in 0..side {
+            let src_x = x / factor;
+            let src_y = y / factor;
+            let from = ((src_y * size + src_x) * 4) as usize;
+            let to = ((y * side + x) * 4) as usize;
+            if from + 3 < pixels.len() && to + 3 < out.len() {
+                out[to] = pixels[from + 2];
+                out[to + 1] = pixels[from + 1];
+                out[to + 2] = pixels[from];
+                out[to + 3] = pixels[from + 3];
+            }
+        }
+    }
+    out
+}
+
+fn write_topdown_bgra_bmp(path: &std::path::Path, width: i32, height: i32, pixels: &[u8]) -> bool {
+    if width <= 0 || height <= 0 {
+        return false;
+    }
+    let width_px = width as usize;
+    let height_px = height as usize;
+    let row = width_px * 4;
+    if pixels.len() < row * height_px {
+        return false;
+    }
+    let image = (row * height_px) as u32;
+    let mut file = Vec::with_capacity(54 + image as usize);
+    file.extend_from_slice(b"BM");
+    file.extend_from_slice(&(54 + image).to_le_bytes());
+    file.extend_from_slice(&0u32.to_le_bytes());
+    file.extend_from_slice(&54u32.to_le_bytes());
+    file.extend_from_slice(&40u32.to_le_bytes());
+    file.extend_from_slice(&width.to_le_bytes());
+    file.extend_from_slice(&height.to_le_bytes());
+    file.extend_from_slice(&1u16.to_le_bytes());
+    file.extend_from_slice(&32u16.to_le_bytes());
+    file.extend_from_slice(&0u32.to_le_bytes());
+    file.extend_from_slice(&image.to_le_bytes());
+    file.extend_from_slice(&2835u32.to_le_bytes());
+    file.extend_from_slice(&2835u32.to_le_bytes());
+    file.extend_from_slice(&0u32.to_le_bytes());
+    file.extend_from_slice(&0u32.to_le_bytes());
+    for y in (0..height_px).rev() {
+        let start = y * row;
+        file.extend_from_slice(&pixels[start..start + row]);
+    }
+    std::fs::write(path, file).is_ok()
+}
+
+unsafe fn working_set() -> (usize, usize) {
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut counters = std::mem::zeroed::<PROCESS_MEMORY_COUNTERS>();
+    counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    let ok = K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb);
+    if ok == 0 {
+        (0, 0)
+    } else {
+        (counters.WorkingSetSize, counters.PeakWorkingSetSize)
+    }
 }
