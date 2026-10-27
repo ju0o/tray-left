@@ -1,0 +1,29 @@
+[package]
+name = "tray-left"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Small Windows tray window for remaining Codex usage"
+repository = "https://github.com/ju0o/tray-left"
+publish = false
+
+[dependencies]
+serde_json = "1"
+ureq = { version = "2.12", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+native-tls = "0.2"
+ureq = { version = "2.12", default-features = false, features = ["native-tls"] }
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+  "Win32_UI_Controls",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
