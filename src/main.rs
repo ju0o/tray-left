@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod icon;
+mod settings;
 mod usage;
 
 #[cfg(windows)]
