@@ -6,6 +6,10 @@ pub struct Snapshot {
     pub plan: String,
     pub session_used: f64,
     pub weekly_used: Option<f64>,
+    pub session_reset_at: Option<i64>,
+    pub session_reset_after: Option<i64>,
+    pub session_window_seconds: Option<i64>,
+    pub weekly_window_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +51,88 @@ pub fn remaining_percent(used: f64) -> u32 {
     (100.0 - used).round().clamp(0.0, 100.0) as u32
 }
 
+pub fn mood_word(remaining: u32) -> &'static str {
+    if remaining > 20 {
+        "여유"
+    } else if remaining > 5 {
+        "주의"
+    } else {
+        "거의 없음"
+    }
+}
+
+pub fn mood_rgb(remaining: Option<u32>) -> [u8; 3] {
+    match remaining {
+        Some(value) if value > 20 => [15, 118, 110],
+        Some(_) => [180, 83, 9],
+        None => [140, 140, 140],
+    }
+}
+
+/// Name a usage window from the length Codex sent.
+/// The plan name is not used: Plus carries a 5-hour window, and Pro 100 does not.
+pub fn window_name(seconds: Option<i64>, weekly_fallback: bool) -> &'static str {
+    match seconds {
+        Some(value) if (14_400..=21_600).contains(&value) => "5시간",
+        Some(value) if (82_800..=90_000).contains(&value) => "하루",
+        Some(value) if (518_400..=691_200).contains(&value) => "이번 주",
+        None if weekly_fallback => "이번 주",
+        _ => "이번 창",
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Civil {
+    pub year: i32,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+}
+
+pub fn refill_phrase(now: Civil, at: Civil) -> String {
+    let now_min = civil_minutes(now);
+    let at_min = civil_minutes(at);
+    if at_min <= now_min {
+        return "곧 다시 채워져요".to_string();
+    }
+    let day = julian_day(at.year, at.month, at.day) - julian_day(now.year, now.month, now.day);
+    let when = match day {
+        0 => format!("오늘 {}", clock_korean(at.hour, at.minute)),
+        1 => format!("내일 {}", clock_korean(at.hour, at.minute)),
+        _ => format!("{}월 {}일 {}", at.month, at.day, clock_korean(at.hour, at.minute)),
+    };
+    format!("{when}쯤 다시 채워져요")
+}
+
+fn civil_minutes(time: Civil) -> i64 {
+    julian_day(time.year, time.month, time.day) * 24 * 60 + time.hour as i64 * 60 + time.minute as i64
+}
+
+fn clock_korean(hour: u8, minute: u8) -> String {
+    let (half, hour) = match hour {
+        0 => ("오전", 12),
+        1..=11 => ("오전", hour),
+        12 => ("오후", 12),
+        _ => ("오후", hour - 12),
+    };
+    if minute == 0 {
+        format!("{half} {hour}시")
+    } else {
+        format!("{half} {hour}시 {minute}분")
+    }
+}
+
+fn julian_day(year: i32, month: u8, day: u8) -> i64 {
+    let y = year as i64;
+    let m = month as i64;
+    let d = day as i64;
+    let a = (14 - m) / 12;
+    let y = y + 4800 - a;
+    let m = m + 12 * a - 3;
+    d + (153 * m + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32045
+}
+
 pub fn parse_usage(headers: &[(&str, &str)], body: &str) -> Option<Snapshot> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
     let mut session = number_at(&json, "/rate_limit/primary_window/used_percent");
@@ -62,6 +148,8 @@ pub fn parse_usage(headers: &[(&str, &str)], body: &str) -> Option<Snapshot> {
             }
         }
     }
+    let window = json.pointer("/rate_limit/primary_window");
+    let weekly_window = json.pointer("/rate_limit/secondary_window");
     Some(Snapshot {
         plan: json
             .get("plan_type")
@@ -70,7 +158,25 @@ pub fn parse_usage(headers: &[(&str, &str)], body: &str) -> Option<Snapshot> {
             .unwrap_or_default(),
         session_used: session?.clamp(0.0, 100.0),
         weekly_used: weekly.map(|value| value.clamp(0.0, 100.0)),
+        session_reset_at: window.and_then(|value| unix_field(value, "reset_at")),
+        session_reset_after: window.and_then(|value| unix_field(value, "reset_after_seconds")),
+        session_window_seconds: window.and_then(|value| unix_field(value, "limit_window_seconds")),
+        weekly_window_seconds: weekly_window.and_then(|value| unix_field(value, "limit_window_seconds")),
     })
+}
+
+fn unix_field(window: &serde_json::Value, name: &str) -> Option<i64> {
+    let value = window.get(name)?;
+    let number = value.as_f64().or_else(|| value.as_i64().map(|item| item as f64))?;
+    if !number.is_finite() || number < 0.0 {
+        return None;
+    }
+    let whole = number.round() as i64;
+    if name == "reset_at" && whole > 10_000_000_000 {
+        Some(whole / 1000)
+    } else {
+        Some(whole)
+    }
 }
 
 #[cfg(windows)]
@@ -229,5 +335,73 @@ mod tests {
         assert_eq!(plan_label("pro"), "Pro");
         assert_eq!(plan_label("PROLITE"), "Pro 100");
         assert_eq!(plan_label("team"), "Team");
+    }
+
+    #[test]
+    fn reads_the_session_reset_clock() {
+        let body = r#"{"plan_type":"prolite","rate_limit":{"primary_window":{"used_percent":10,"reset_at":1738300000,"reset_after_seconds":90}}}"#;
+        let snapshot = parse_usage(&[], body).unwrap();
+        assert_eq!(snapshot.session_reset_at, Some(1_738_300_000));
+        assert_eq!(snapshot.session_reset_after, Some(90));
+    }
+
+    #[test]
+    fn refill_line_uses_today_tomorrow_or_a_date() {
+        let now = Civil { year: 2026, month: 10, day: 27, hour: 15, minute: 0 };
+        assert_eq!(
+            refill_phrase(now, Civil { hour: 21, minute: 0, ..now }),
+            "오늘 오후 9시쯤 다시 채워져요"
+        );
+        assert_eq!(
+            refill_phrase(now, Civil { day: 28, hour: 0, minute: 10, ..now }),
+            "내일 오전 12시 10분쯤 다시 채워져요"
+        );
+        assert_eq!(
+            refill_phrase(now, Civil { day: 30, hour: 16, minute: 0, ..now }),
+            "10월 30일 오후 4시쯤 다시 채워져요"
+        );
+        assert_eq!(
+            refill_phrase(now, Civil { hour: 14, minute: 0, ..now }),
+            "곧 다시 채워져요"
+        );
+    }
+
+    #[test]
+    fn mood_follows_how_much_is_left() {
+        assert_eq!(mood_word(58), "여유");
+        assert_eq!(mood_word(20), "주의");
+        assert_eq!(mood_word(5), "거의 없음");
+        assert_eq!(mood_rgb(Some(58)), [15, 118, 110]);
+        assert_eq!(mood_rgb(Some(12)), [180, 83, 9]);
+        assert_eq!(mood_rgb(None), [140, 140, 140]);
+    }
+
+    #[test]
+    fn plus_shape_names_the_five_hour_window_and_the_week() {
+        let body = r#"{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":40,"limit_window_seconds":18000,"reset_at":1738300000},"secondary_window":{"used_percent":12,"limit_window_seconds":604800}}}"#;
+        let snapshot = parse_usage(&[], body).unwrap();
+        assert_eq!(snapshot.plan, "Plus");
+        assert_eq!(snapshot.session_window_seconds, Some(18_000));
+        assert_eq!(snapshot.weekly_window_seconds, Some(604_800));
+        assert_eq!(window_name(snapshot.session_window_seconds, false), "5시간");
+        assert_eq!(window_name(snapshot.weekly_window_seconds, true), "이번 주");
+        assert_eq!(remaining_percent(snapshot.session_used), 60);
+        assert_eq!(remaining_percent(snapshot.weekly_used.unwrap()), 88);
+    }
+
+    #[test]
+    fn a_week_only_window_is_not_called_five_hours() {
+        let body = r#"{"plan_type":"prolite","rate_limit":{"primary_window":{"used_percent":42,"limit_window_seconds":604800}}}"#;
+        let snapshot = parse_usage(&[], body).unwrap();
+        assert_eq!(snapshot.plan, "Pro 100");
+        assert_eq!(snapshot.weekly_used, None);
+        assert_eq!(window_name(snapshot.session_window_seconds, false), "이번 주");
+    }
+
+    #[test]
+    fn missing_window_length_stays_generic() {
+        assert_eq!(window_name(None, false), "이번 창");
+        assert_eq!(window_name(None, true), "이번 주");
+        assert_eq!(window_name(Some(3_600), false), "이번 창");
     }
 }

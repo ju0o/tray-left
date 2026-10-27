@@ -2,10 +2,11 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use windows_sys::Win32::Foundation::{
-    GetLastError, ERROR_ALREADY_EXISTS, FALSE, COLORREF, HWND, LPARAM, RECT, TRUE, WPARAM,
+    GetLastError, ERROR_ALREADY_EXISTS, FALSE, COLORREF, FILETIME, HWND, LPARAM, RECT, SIZE,
+    SYSTEMTIME, TRUE, WPARAM,
 };
 use windows_sys::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -13,13 +14,16 @@ use windows_sys::Win32::Graphics::Dwm::{
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection,
     CreateFontW, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject,
-    DrawTextW, EndPaint, FillRect, GetDC, GetDeviceCaps, GetStockObject, InvalidateRect, ReleaseDC, RoundRect,
+    DrawTextW, EndPaint, FillRect, GetDC, GetDeviceCaps, GetTextExtentPoint32W,
+    InvalidateRect, ReleaseDC, RoundRect,
     SelectObject, SetBkMode, SetTextColor, SetWindowRgn, BITMAPINFO, BITMAPINFOHEADER,
     DIB_RGB_COLORS, DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER,
-    DT_WORDBREAK, FW_NORMAL, FW_SEMIBOLD, HFONT, HGDIOBJ, LOGPIXELSX, NULL_BRUSH, PAINTSTRUCT,
+    DT_WORDBREAK, FW_NORMAL, FW_SEMIBOLD, HFONT, HGDIOBJ, LOGPIXELSX, PAINTSTRUCT,
     PS_SOLID, SRCCOPY, TRANSPARENT,
 };
+use windows_sys::Win32::Storage::FileSystem::FileTimeToLocalFileTime;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Time::FileTimeToSystemTime;
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW, RegSetValueExW,
     HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE,
@@ -32,8 +36,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows_sys::Win32::UI::Shell::{
-    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyIcon, DispatchMessageW,
@@ -41,15 +45,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PostMessageW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow, SetWindowPos,
     ShowWindow, SystemParametersInfoW, TranslateMessage, CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW,
     HICON, ICONINFO, IDC_ARROW, IDC_HAND, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER,
-    SW_HIDE, SW_SHOW, SW_SHOWNORMAL, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDBLCLK,
+    SW_HIDE, SW_SHOW, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDBLCLK,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSW,
     WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use crate::icon::remaining_icon;
-use crate::usage::{self, FetchFail, Snapshot};
+use crate::usage::{self, Civil, FetchFail, Snapshot};
 
-const SOURCE_URL: &str = "https://github.com/ju0o/tray-left";
+const CARD_W: i32 = 320;
 const TRAY_MSG: u32 = 0x8000 + 1;
 const REFRESH_MSG: u32 = 0x8000 + 2;
 const SHOW_MSG: u32 = 0x8000 + 3;
@@ -57,15 +61,12 @@ const ICON_ID: u32 = 1;
 const HIT_CLOSE: u8 = 1;
 const HIT_REFRESH: u8 = 2;
 const HIT_QUIT: u8 = 3;
-const HIT_INFO: u8 = 4;
 
 const INK: u32 = 0x00171717;
 const MUTED: u32 = 0x005A5A5A;
 const PAPER: u32 = 0x00F4F6F7;
 const LINE: u32 = 0x00D8D6D2;
 const WHITE: u32 = 0x00FFFFFF;
-const TEAL: u32 = 0x006E760F;
-const AMBER: u32 = 0x000953B4;
 const BUTTON: u32 = 0x00171717;
 const BUTTON_HOVER: u32 = 0x00323232;
 const SOFT: u32 = 0x00E8E6E2;
@@ -82,7 +83,7 @@ struct Fonts {
     dpi: i32,
     title: HFONT,
     hero: HFONT,
-    status: HFONT,
+    lead: HFONT,
     body: HFONT,
 }
 
@@ -91,6 +92,7 @@ unsafe impl Send for Fonts {}
 struct Row {
     label: String,
     value: String,
+    value_color: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -122,11 +124,19 @@ struct Card {
     close: Spot,
     refresh: Spot,
     quit: Spot,
-    info: Spot,
+    hero_box: Spot,
+    scope_box: Option<Spot>,
     bar: Option<Spot>,
+    refill_box: Option<Spot>,
+    note_box: Option<Spot>,
+    rows_top: i32,
+    row_h: i32,
     rows: Vec<Row>,
     hero: String,
-    sub: String,
+    word: String,
+    scope: String,
+    refill: String,
+    note: String,
     hero_big: bool,
     accent: u32,
     remaining: u32,
@@ -200,7 +210,7 @@ pub fn run() {
             &pref as *const i32 as *const c_void,
             4,
         );
-        let icon = make_icon(32, 0);
+        let icon = make_icon(32, 0, usage::mood_rgb(None));
         ICON_SLOT.store(icon as usize, Ordering::SeqCst);
         add_tray(hwnd, icon, "Codex 확인 중");
         apply_view();
@@ -291,9 +301,9 @@ unsafe fn apply_view() {
     let Some(view) = VIEW.lock().ok().map(|view| view.clone()) else {
         return;
     };
-    let (tip, remaining, kind, left, plan, code) = describe(&view);
+    let (tip, remaining, rgb, kind, left, plan, code) = describe(&view);
     let hwnd = HWND_SLOT.load(Ordering::SeqCst) as HWND;
-    let icon = make_icon(32, remaining);
+    let icon = make_icon(32, remaining, rgb);
     if !hwnd.is_null() {
         update_tray(hwnd, icon, &tip);
     }
@@ -311,12 +321,21 @@ unsafe fn apply_view() {
     InvalidateRect(hwnd, std::ptr::null(), FALSE);
 }
 
-fn describe(view: &View) -> (String, u32, &'static str, Option<u32>, String, Option<u16>) {
+fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, String, Option<u16>) {
     match view {
-        View::Loading => ("Codex 확인 중".into(), 0, "loading", None, String::new(), None),
+        View::Loading => (
+            "Codex 확인 중".into(),
+            0,
+            usage::mood_rgb(None),
+            "loading",
+            None,
+            String::new(),
+            None,
+        ),
         View::NeedLogin => (
             "Codex 로그인 필요".into(),
             0,
+            usage::mood_rgb(None),
             "login",
             None,
             String::new(),
@@ -325,6 +344,7 @@ fn describe(view: &View) -> (String, u32, &'static str, Option<u32>, String, Opt
         View::Failed(code) => (
             "Codex 확인 실패".into(),
             0,
+            usage::mood_rgb(None),
             "failed",
             None,
             String::new(),
@@ -335,6 +355,7 @@ fn describe(view: &View) -> (String, u32, &'static str, Option<u32>, String, Opt
             (
                 format!("Codex {left}% 남음"),
                 left,
+                usage::mood_rgb(Some(left)),
                 "ready",
                 Some(left),
                 snapshot.plan.clone(),
@@ -344,107 +365,226 @@ fn describe(view: &View) -> (String, u32, &'static str, Option<u32>, String, Opt
     }
 }
 
+fn rgb_color(rgb: [u8; 3]) -> u32 {
+    rgb[0] as u32 | ((rgb[1] as u32) << 8) | ((rgb[2] as u32) << 16)
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn reset_unix(at: Option<i64>, after: Option<i64>, now: i64) -> Option<i64> {
+    if let Some(at) = at.filter(|value| *value > 1_000_000_000) {
+        return Some(at);
+    }
+    after.map(|seconds| now.saturating_add(seconds))
+}
+
+fn local_civil(unix: i64) -> Option<Civil> {
+    if unix < 0 {
+        return None;
+    }
+    let ticks = (unix as u64)
+        .saturating_add(11_644_473_600)
+        .saturating_mul(10_000_000);
+    let utc = FILETIME {
+        dwLowDateTime: ticks as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    let mut local = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut system = SYSTEMTIME {
+        wYear: 0,
+        wMonth: 0,
+        wDayOfWeek: 0,
+        wDay: 0,
+        wHour: 0,
+        wMinute: 0,
+        wSecond: 0,
+        wMilliseconds: 0,
+    };
+    unsafe {
+        if FileTimeToLocalFileTime(&utc, &mut local) == 0 {
+            return None;
+        }
+        if FileTimeToSystemTime(&local, &mut system) == 0 {
+            return None;
+        }
+    }
+    Some(Civil {
+        year: system.wYear as i32,
+        month: system.wMonth as u8,
+        day: system.wDay as u8,
+        hour: system.wHour as u8,
+        minute: system.wMinute as u8,
+    })
+}
+
 fn card_for(view: &View, dpi: i32) -> Card {
     let s = |value: i32| scale(value, dpi);
     let mut rows = Vec::new();
-    let (hero, sub, hero_big, accent, remaining) = match view {
-        View::Loading => ("확인 중".to_string(), String::new(), false, INK, 0),
-        View::NeedLogin => (
-            "로그인이 필요해요".to_string(),
-            "Codex에 로그인한 뒤 다시 확인해 주세요.".to_string(),
-            false,
-            AMBER,
-            0,
-        ),
-        View::Failed(_) => (
-            "확인하지 못했어요".to_string(),
-            "잠시 뒤 다시 확인해 주세요.".to_string(),
-            false,
-            AMBER,
-            0,
-        ),
+    let hero;
+    let mut word = String::new();
+    let mut scope = String::new();
+    let mut refill = String::new();
+    let mut note = String::new();
+    let mut hero_big = false;
+    let mut accent = INK;
+    let mut remaining = 0u32;
+    let mut show_bar = false;
+    match view {
+        View::Loading => hero = "확인 중".to_string(),
+        View::NeedLogin => {
+            hero = "로그인이 필요해요".to_string();
+            note = "Codex에 로그인한 뒤 다시 확인해 주세요.".to_string();
+        }
+        View::Failed(_) => {
+            hero = "확인하지 못했어요".to_string();
+            note = "잠시 뒤 다시 확인해 주세요.".to_string();
+        }
         View::Ready(snapshot) => {
             let left = usage::remaining_percent(snapshot.session_used);
-            rows.push(Row {
-                label: "이번 창".to_string(),
-                value: format!("{}% 씀", snapshot.session_used.round() as u32),
-            });
+            remaining = left;
+            hero = format!("{left}%");
+            word = usage::mood_word(left).to_string();
+            hero_big = true;
+            accent = rgb_color(usage::mood_rgb(Some(left)));
+            show_bar = true;
+            scope = usage::window_name(snapshot.session_window_seconds, false).to_string();
+            let now = now_unix();
+            if let Some(at) = reset_unix(snapshot.session_reset_at, snapshot.session_reset_after, now) {
+                if let (Some(today), Some(moment)) = (local_civil(now), local_civil(at)) {
+                    refill = usage::refill_phrase(today, moment);
+                }
+            }
             if let Some(used) = snapshot.weekly_used {
+                let week_left = usage::remaining_percent(used);
+                let mut label = usage::window_name(snapshot.weekly_window_seconds, true).to_string();
+                if label == scope {
+                    label = "다른 창".to_string();
+                }
+                let value_color = if week_left > 20 {
+                    INK
+                } else {
+                    rgb_color(usage::mood_rgb(Some(week_left)))
+                };
                 rows.push(Row {
-                    label: "이번 주".to_string(),
-                    value: format!("{}% 씀", used.round() as u32),
+                    label,
+                    value: format!("{week_left}% 남음"),
+                    value_color,
                 });
             }
             if !snapshot.plan.is_empty() {
                 rows.push(Row {
                     label: "요금제".to_string(),
                     value: snapshot.plan.clone(),
+                    value_color: INK,
                 });
             }
-            (
-                format!("{left}%"),
-                "남음".to_string(),
-                true,
-                if left > 20 { TEAL } else { AMBER },
-                left,
-            )
         }
-    };
-    let width = s(400);
-    let pad = s(24);
+    }
+    let width = s(CARD_W);
+    let pad = s(20);
     let close_size = s(44);
     let close = Spot {
-        x: width - close_size - s(8),
-        y: s(8),
+        x: width - close_size - s(6),
+        y: s(4),
         w: close_size,
         h: close_size,
     };
-    let content_top = if rows.is_empty() { s(214) } else { s(236) };
-    let row_h = s(40);
-    let row_block = row_h * rows.len() as i32;
-    let buttons_y = content_top + row_block + if rows.is_empty() { 0 } else { s(8) };
-    let button_gap = s(12);
-    let button_w = (width - pad * 2 - button_gap) / 2;
-    let button_h = s(52);
+    let mut y = s(56);
+    let hero_box = Spot {
+        x: pad,
+        y,
+        w: width - pad * 2,
+        h: if hero_big { s(40) } else { s(32) },
+    };
+    y += hero_box.h;
+    let scope_box = if scope.is_empty() {
+        None
+    } else {
+        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(24) };
+        y += spot.h;
+        Some(spot)
+    };
+    let bar = if show_bar {
+        y += s(10);
+        let spot = Spot {
+            x: pad,
+            y,
+            w: width - pad * 2,
+            h: s(6).max(4),
+        };
+        y += spot.h;
+        Some(spot)
+    } else {
+        None
+    };
+    let refill_box = if refill.is_empty() {
+        None
+    } else {
+        y += s(8);
+        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(44) };
+        y += spot.h;
+        Some(spot)
+    };
+    let note_box = if note.is_empty() {
+        None
+    } else {
+        y += s(6);
+        let spot = Spot { x: s(28), y, w: width - s(56), h: s(52) };
+        y += spot.h;
+        Some(spot)
+    };
+    let rows_top = if rows.is_empty() {
+        y
+    } else {
+        y += s(8);
+        let top = y;
+        y += s(32) * rows.len() as i32;
+        top
+    };
+    let row_h = if rows.is_empty() { 0 } else { s(32) };
+    y += s(12);
+    let button_w = s(168).min(width - pad * 2);
     let refresh = Spot {
-        x: pad,
-        y: buttons_y,
+        x: (width - button_w) / 2,
+        y,
         w: button_w,
-        h: button_h,
+        h: s(44),
     };
+    y += refresh.h;
     let quit = Spot {
-        x: pad + button_w + button_gap,
-        y: buttons_y,
-        w: button_w,
-        h: button_h,
-    };
-    let info = Spot {
         x: pad,
-        y: buttons_y + button_h + s(6),
+        y,
         w: width - pad * 2,
         h: s(44),
     };
-    let bar = if rows.is_empty() {
-        None
-    } else {
-        Some(Spot {
-            x: pad,
-            y: s(208),
-            w: width - pad * 2,
-            h: s(8),
-        })
-    };
+    y += quit.h + s(8);
     Card {
         width,
-        height: info.y + info.h + s(8),
+        height: y,
         close,
         refresh,
         quit,
-        info,
+        hero_box,
+        scope_box,
         bar,
+        refill_box,
+        note_box,
+        rows_top,
+        row_h,
         rows,
         hero,
-        sub,
+        word,
+        scope,
+        refill,
+        note,
         hero_big,
         accent,
         remaining,
@@ -470,7 +610,7 @@ unsafe fn place(hwnd: HWND) {
         card.height,
         SWP_NOZORDER | SWP_NOACTIVATE,
     );
-    let radius = scale(22, dpi);
+    let radius = scale(18, dpi);
     let region = CreateRoundRectRgn(0, 0, card.width + 1, card.height + 1, radius, radius);
     if !region.is_null() {
         SetWindowRgn(hwnd, region, TRUE);
@@ -596,18 +736,6 @@ fn activate(hwnd: HWND, hit: u8) {
             remove_tray(hwnd);
             PostQuitMessage(0);
         },
-        HIT_INFO => unsafe {
-            let op = wide("open");
-            let file = wide(SOURCE_URL);
-            ShellExecuteW(
-                hwnd,
-                op.as_ptr(),
-                file.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                SW_SHOWNORMAL,
-            );
-        },
         _ => {}
     }
 }
@@ -623,8 +751,6 @@ fn hit_at(hwnd: HWND, x: i32, y: i32) -> u8 {
         HIT_REFRESH
     } else if card.quit.contains(x, y) {
         HIT_QUIT
-    } else if card.info.contains(x, y) {
-        HIT_INFO
     } else {
         0
     }
@@ -654,18 +780,18 @@ unsafe fn paint(hwnd: HWND) {
 unsafe fn paint_card(hdc: HGDIOBJ, card: &Card, fonts: &Fonts) {
     let hdc = hdc as windows_sys::Win32::Graphics::Gdi::HDC;
     let hover = HOVER.load(Ordering::Relaxed);
+    let pad = px(card, 20);
     fill_rect(hdc, 0, 0, card.width, card.height, PAPER);
-    fill_rect(hdc, 0, scale_from_card(card, 56), card.width, 1, LINE);
     text_in(
         hdc,
         fonts.title,
         INK,
-        rect(scale_from_card(card, 24), scale_from_card(card, 8), card.close.x - scale_from_card(card, 32), scale_from_card(card, 44)),
+        rect(pad, card.close.y, card.close.x - pad - px(card, 8), card.close.h),
         "Codex",
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
     if hover == HIT_CLOSE {
-        fill_round(hdc, card.close, scale_from_card(card, 16), SOFT);
+        fill_round(hdc, card.close, px(card, 16), SOFT);
     }
     text_in(
         hdc,
@@ -675,48 +801,71 @@ unsafe fn paint_card(hdc: HGDIOBJ, card: &Card, fonts: &Fonts) {
         "×",
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
-    let hero_font = if card.hero_big { fonts.hero } else { fonts.status };
-    text_in(
-        hdc,
-        hero_font,
-        card.accent,
-        rect(scale_from_card(card, 24), scale_from_card(card, 72), card.width - scale_from_card(card, 48), scale_from_card(card, 72)),
-        &card.hero,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-    );
-    if !card.sub.is_empty() {
+    if card.hero_big {
+        paint_meter(hdc, card, fonts);
+    } else {
+        text_in(
+            hdc,
+            fonts.lead,
+            INK,
+            card.hero_box.rect(),
+            &card.hero,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+    }
+    if let Some(scope) = card.scope_box {
         text_in(
             hdc,
             fonts.body,
             MUTED,
-            rect(scale_from_card(card, 32), scale_from_card(card, 146), card.width - scale_from_card(card, 64), scale_from_card(card, 56)),
-            &card.sub,
-            DT_CENTER | DT_WORDBREAK | DT_NOPREFIX,
+            scope.rect(),
+            &card.scope,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
         );
     }
     if let Some(bar) = card.bar {
         fill_round(hdc, bar, bar.h, LINE);
         let filled = (bar.w as u32 * card.remaining / 100) as i32;
         if filled > 0 {
-            fill_round(
-                hdc,
-                Spot { w: filled.max(bar.h), ..bar },
-                bar.h,
-                card.accent,
-            );
+            fill_round(hdc, Spot { w: filled.max(bar.h), ..bar }, bar.h, card.accent);
         }
     }
-    let row_top = card.bar.map(|bar| bar.y + bar.h + scale_from_card(card, 16)).unwrap_or(0);
-    let row_h = if card.rows.is_empty() { 0 } else { (card.refresh.y - row_top) / card.rows.len() as i32 };
+    if let Some(spot) = card.refill_box {
+        text_in(
+            hdc,
+            fonts.body,
+            MUTED,
+            spot.rect(),
+            &card.refill,
+            DT_CENTER | DT_WORDBREAK | DT_NOPREFIX,
+        );
+    }
+    if let Some(spot) = card.note_box {
+        text_in(
+            hdc,
+            fonts.body,
+            MUTED,
+            spot.rect(),
+            &card.note,
+            DT_CENTER | DT_WORDBREAK | DT_NOPREFIX,
+        );
+    }
     for (index, row) in card.rows.iter().enumerate() {
-        let y = row_top + row_h * index as i32;
-        let label = rect(scale_from_card(card, 28), y, card.width / 2, row_h);
-        let value = rect(card.width / 2, y, card.width / 2 - scale_from_card(card, 28), row_h);
+        let y = card.rows_top + card.row_h * index as i32;
+        let label = rect(pad, y, card.width / 2 - pad, card.row_h);
+        let value = rect(card.width / 2, y, card.width / 2 - pad, card.row_h);
         text_in(hdc, fonts.body, MUTED, label, &row.label, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        text_in(hdc, fonts.body, INK, value, &row.value, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        text_in(
+            hdc,
+            fonts.body,
+            row.value_color,
+            value,
+            &row.value,
+            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
     }
     let refresh_fill = if hover == HIT_REFRESH { BUTTON_HOVER } else { BUTTON };
-    fill_round(hdc, card.refresh, scale_from_card(card, 14), refresh_fill);
+    fill_round(hdc, card.refresh, card.refresh.h / 2, refresh_fill);
     text_in(
         hdc,
         fonts.body,
@@ -725,31 +874,50 @@ unsafe fn paint_card(hdc: HGDIOBJ, card: &Card, fonts: &Fonts) {
         "다시 확인",
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
-    fill_round(hdc, card.quit, scale_from_card(card, 14), if hover == HIT_QUIT { SOFT } else { WHITE });
-    stroke_round(hdc, card.quit, scale_from_card(card, 14), LINE);
     text_in(
         hdc,
         fonts.body,
-        INK,
+        if hover == HIT_QUIT { INK } else { MUTED },
         card.quit.rect(),
         "끝내기",
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
+}
+
+unsafe fn paint_meter(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, fonts: &Fonts) {
+    let percent = text_size(hdc, fonts.hero, &card.hero);
+    let word = text_size(hdc, fonts.title, &card.word);
+    let gap = px(card, 8);
+    let total = percent.cx + if card.word.is_empty() { 0 } else { gap + word.cx };
+    let x = card.hero_box.x + (card.hero_box.w - total).max(0) / 2;
+    let percent_y = card.hero_box.y + (card.hero_box.h - percent.cy).max(0) / 2;
     text_in(
         hdc,
-        fonts.body,
-        if hover == HIT_INFO { INK } else { MUTED },
-        card.info.rect(),
-        "정보",
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        fonts.hero,
+        card.accent,
+        rect(x, percent_y, percent.cx + px(card, 4), percent.cy + 4),
+        &card.hero,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    if card.word.is_empty() {
+        return;
+    }
+    let word_y = card.hero_box.y + (card.hero_box.h - word.cy).max(0) / 2;
+    text_in(
+        hdc,
+        fonts.title,
+        card.accent,
+        rect(x + percent.cx + gap, word_y, word.cx + px(card, 8), word.cy + 4),
+        &card.word,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
 }
 
-fn scale_from_card(card: &Card, px: i32) -> i32 {
+fn px(card: &Card, logical: i32) -> i32 {
     if card.width <= 0 {
-        px
+        logical
     } else {
-        px * card.width / 400
+        logical * card.width / CARD_W
     }
 }
 
@@ -763,13 +931,13 @@ unsafe fn fonts_for(dpi: i32) -> Fonts {
                 dpi: fonts.dpi,
                 title: fonts.title,
                 hero: fonts.hero,
-                status: fonts.status,
+                lead: fonts.lead,
                 body: fonts.body,
             };
         }
         DeleteObject(fonts.title as HGDIOBJ);
         DeleteObject(fonts.hero as HGDIOBJ);
-        DeleteObject(fonts.status as HGDIOBJ);
+        DeleteObject(fonts.lead as HGDIOBJ);
         DeleteObject(fonts.body as HGDIOBJ);
     }
     let fonts = make_fonts(dpi);
@@ -777,7 +945,7 @@ unsafe fn fonts_for(dpi: i32) -> Fonts {
         dpi: fonts.dpi,
         title: fonts.title,
         hero: fonts.hero,
-        status: fonts.status,
+        lead: fonts.lead,
         body: fonts.body,
     });
     fonts
@@ -786,16 +954,28 @@ unsafe fn fonts_for(dpi: i32) -> Fonts {
 unsafe fn make_fonts(dpi: i32) -> Fonts {
     Fonts {
         dpi,
-        title: font(scale(18, dpi), FW_SEMIBOLD),
-        hero: font(scale(56, dpi), FW_SEMIBOLD),
-        status: font(scale(26, dpi), FW_SEMIBOLD),
-        body: font(scale(18, dpi), FW_NORMAL),
+        title: font(scale(16, dpi), FW_SEMIBOLD),
+        hero: font(scale(32, dpi), FW_SEMIBOLD),
+        lead: font(scale(20, dpi), FW_SEMIBOLD),
+        body: font(scale(16, dpi), FW_NORMAL),
     }
 }
 
 unsafe fn font(height: i32, weight: u32) -> HFONT {
     let face = wide("Segoe UI");
     CreateFontW(-height, 0, 0, 0, weight as i32, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr())
+}
+
+unsafe fn text_size(hdc: windows_sys::Win32::Graphics::Gdi::HDC, font: HFONT, value: &str) -> SIZE {
+    let old = SelectObject(hdc, font as HGDIOBJ);
+    let text = wide(value);
+    let mut size = SIZE { cx: 0, cy: 0 };
+    let chars = text.len().saturating_sub(1) as i32;
+    if chars > 0 {
+        GetTextExtentPoint32W(hdc, text.as_ptr(), chars, &mut size);
+    }
+    SelectObject(hdc, old);
+    size
 }
 
 unsafe fn text_in(hdc: windows_sys::Win32::Graphics::Gdi::HDC, font: HFONT, color: u32, mut area: RECT, value: &str, format: u32) {
@@ -823,17 +1003,6 @@ unsafe fn fill_round(hdc: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, ra
     SelectObject(hdc, old_brush);
     SelectObject(hdc, old_pen);
     DeleteObject(brush as HGDIOBJ);
-    DeleteObject(pen as HGDIOBJ);
-}
-
-unsafe fn stroke_round(hdc: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, radius: i32, color: u32) {
-    let brush = GetStockObject(NULL_BRUSH);
-    let pen = CreatePen(PS_SOLID, 1, color as COLORREF);
-    let old_brush = SelectObject(hdc, brush);
-    let old_pen = SelectObject(hdc, pen as HGDIOBJ);
-    RoundRect(hdc, spot.x, spot.y, spot.x + spot.w, spot.y + spot.h, radius, radius);
-    SelectObject(hdc, old_brush);
-    SelectObject(hdc, old_pen);
     DeleteObject(pen as HGDIOBJ);
 }
 
@@ -886,8 +1055,8 @@ unsafe fn tray_data(hwnd: HWND, icon: HICON, tip: &str) -> NOTIFYICONDATAW {
     data
 }
 
-unsafe fn make_icon(size: u32, remaining: u32) -> HICON {
-    let pixels = remaining_icon(size, remaining);
+unsafe fn make_icon(size: u32, remaining: u32, color: [u8; 3]) -> HICON {
+    let pixels = remaining_icon(size, remaining, color);
     let bmi = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
