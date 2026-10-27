@@ -1,6 +1,7 @@
 /// Colored arc with the remaining number in the middle.
 /// The arc starts at the top and grows clockwise. A faint ring stays visible
-/// when little is left. Digits are drawn on a 2px grid so a tray scale-down stays sharp.
+/// when little is left. Digits are a bold 5 by 7 grid with a dark edge so they
+/// survive the tray slot scaling the icon down.
 pub fn remaining_icon(size: u32, remaining: u32, color: [u8; 3], show_number: bool) -> Vec<u8> {
     let size = size.max(16);
     let remaining = remaining.min(100);
@@ -50,41 +51,48 @@ fn stamp_number(pixels: &mut [u8], size: u32, number: u32) {
     }
     let scale = digit_scale(size, digits.len());
     let gap = scale;
-    let glyph_w = scale * 3;
-    let glyph_h = scale * 5;
+    let glyph_w = scale * 5;
+    let glyph_h = scale * 7;
     let total_w = glyph_w * digits.len() as u32 + gap * (digits.len() as u32 - 1);
-    let origin_x = (size - total_w) / 2;
-    let origin_y = (size - glyph_h) / 2;
+    let origin_x = (size.saturating_sub(total_w) / 2) as i32;
+    let origin_y = (size.saturating_sub(glyph_h) / 2) as i32;
+    let halo = scale as i32;
     for (index, digit) in digits.iter().enumerate() {
-        let x = origin_x + index as u32 * (glyph_w + gap);
-        stamp_glyph(pixels, size, x, origin_y, *digit, scale, [28, 32, 34], 1, 1);
-        stamp_glyph(pixels, size, x, origin_y, *digit, scale, [248, 248, 246], 0, 0);
+        let x = origin_x + index as i32 * (glyph_w + gap) as i32;
+        let y = origin_y;
+        for step in 1..=halo {
+            stamp_glyph(pixels, size, x + step, y + step, *digit, scale, [28, 32, 34]);
+        }
+        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)] {
+            stamp_glyph(pixels, size, x + dx, y + dy, *digit, scale, [28, 32, 34]);
+        }
+        stamp_glyph(pixels, size, x, y, *digit, scale, [248, 248, 246]);
     }
 }
 
 fn digit_scale(size: u32, count: usize) -> u32 {
-    let raw_w = 3 * count as u32 + (count as u32 - 1);
-    let by_h = (size * 50 / 100) / 5;
-    let by_w = (size * 64 / 100) / raw_w.max(1);
+    let raw_w = 5 * count as u32 + (count as u32 - 1);
+    let by_h = (size * 62 / 100) / 7;
+    let by_w = (size * 72 / 100) / raw_w.max(1);
     by_h.min(by_w).max(1)
 }
 
-fn stamp_glyph(pixels: &mut [u8], size: u32, origin_x: u32, origin_y: u32, digit: u8, scale: u32, color: [u8; 3], shift_x: u32, shift_y: u32) {
+fn stamp_glyph(pixels: &mut [u8], size: u32, origin_x: i32, origin_y: i32, digit: u8, scale: u32, color: [u8; 3]) {
     let rows = glyph(digit);
+    let scale_i = scale as i32;
     for (row, bits) in rows.iter().enumerate() {
-        for col in 0..3 {
-            if bits & (1 << (2 - col)) == 0 {
+        for col in 0..5 {
+            if bits & (1 << (4 - col)) == 0 {
                 continue;
             }
-            for dy in 0..scale {
-                for dx in 0..scale {
-                    put(
+            for dy in 0..scale_i {
+                for dx in 0..scale_i {
+                    put_at(
                         pixels,
                         size,
-                        origin_x + shift_x + col * scale + dx,
-                        origin_y + shift_y + row as u32 * scale + dy,
+                        origin_x + col * scale_i + dx,
+                        origin_y + row as i32 * scale_i + dy,
                         color,
-                        255,
                     );
                 }
             }
@@ -92,18 +100,25 @@ fn stamp_glyph(pixels: &mut [u8], size: u32, origin_x: u32, origin_y: u32, digit
     }
 }
 
-fn glyph(digit: u8) -> [u8; 5] {
+fn put_at(pixels: &mut [u8], size: u32, x: i32, y: i32, color: [u8; 3]) {
+    if x < 0 || y < 0 {
+        return;
+    }
+    put(pixels, size, x as u32, y as u32, color, 255);
+}
+
+fn glyph(digit: u8) -> [u8; 7] {
     match digit {
-        0 => [0b111, 0b101, 0b101, 0b101, 0b111],
-        1 => [0b010, 0b110, 0b010, 0b010, 0b111],
-        2 => [0b111, 0b001, 0b111, 0b100, 0b111],
-        3 => [0b111, 0b001, 0b111, 0b001, 0b111],
-        4 => [0b101, 0b101, 0b111, 0b001, 0b001],
-        5 => [0b111, 0b100, 0b111, 0b001, 0b111],
-        6 => [0b111, 0b100, 0b111, 0b101, 0b111],
-        7 => [0b111, 0b001, 0b001, 0b001, 0b001],
-        8 => [0b111, 0b101, 0b111, 0b101, 0b111],
-        _ => [0b111, 0b101, 0b111, 0b001, 0b111],
+        0 => [0b01110, 0b11111, 0b11011, 0b11011, 0b11011, 0b11111, 0b01110],
+        1 => [0b01110, 0b11110, 0b01110, 0b01110, 0b01110, 0b01110, 0b11111],
+        2 => [0b11110, 0b11111, 0b00011, 0b01110, 0b11100, 0b11111, 0b11111],
+        3 => [0b11110, 0b11111, 0b00011, 0b01110, 0b00011, 0b11111, 0b11110],
+        4 => [0b11011, 0b11011, 0b11111, 0b11111, 0b00011, 0b00011, 0b00011],
+        5 => [0b11111, 0b11111, 0b11100, 0b11110, 0b00011, 0b11111, 0b11110],
+        6 => [0b01111, 0b11111, 0b11100, 0b11110, 0b11011, 0b11111, 0b01110],
+        7 => [0b11111, 0b11111, 0b00011, 0b00110, 0b01100, 0b01100, 0b01100],
+        8 => [0b01110, 0b11111, 0b11011, 0b01110, 0b11011, 0b11111, 0b01110],
+        _ => [0b01110, 0b11111, 0b11011, 0b01111, 0b00011, 0b11111, 0b11110],
     }
 }
 
@@ -141,6 +156,6 @@ mod tests {
                 }
             }
         }
-        assert!(bright > 12, "digits should be visible in the center");
+        assert!(bright > 40, "bold digits should fill the center, counted {bright}");
     }
 }

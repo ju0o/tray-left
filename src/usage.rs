@@ -78,12 +78,39 @@ pub fn mood_word(remaining: u32) -> &'static str {
     }
 }
 
+/// Light-palette wrapper kept for tests. The window asks `mood_rgb_on` so a dark taskbar can use brighter colors.
+#[allow(dead_code)]
 pub fn mood_rgb(remaining: Option<u32>) -> [u8; 3] {
-    match remaining {
-        Some(value) if value > 20 => [15, 118, 110],
-        Some(_) => [180, 83, 9],
-        None => [140, 140, 140],
+    mood_rgb_on(remaining, true)
+}
+
+/// Light colors stay deep so they read on a white card.
+/// Dark colors are brighter so the same mark survives a dark taskbar.
+pub fn mood_rgb_on(remaining: Option<u32>, light: bool) -> [u8; 3] {
+    if light {
+        match remaining {
+            Some(value) if value > 20 => [15, 118, 110],
+            Some(_) => [180, 83, 9],
+            None => [140, 140, 140],
+        }
+    } else {
+        match remaining {
+            Some(value) if value > 20 => [45, 212, 191],
+            Some(_) => [251, 191, 36],
+            None => [186, 186, 186],
+        }
     }
+}
+
+/// Ease-out cubic from `from` to `to` across `frames` steps.
+/// Tick 0 is the old number. The last tick lands on the new number.
+pub fn ease_count(from: i32, to: i32, tick: u8, frames: u8) -> i32 {
+    if frames == 0 || tick >= frames {
+        return to.clamp(0, 100);
+    }
+    let t = tick as f32 / frames as f32;
+    let eased = 1.0 - (1.0 - t).powi(3);
+    ((from as f32 + (to - from) as f32 * eased).round() as i32).clamp(0, 100)
 }
 
 /// Name a usage window from the length Codex sent.
@@ -355,7 +382,7 @@ pub fn fetch_usage(home: &Path) -> Result<Snapshot, FetchFail> {
         .get("https://chatgpt.com/backend-api/wham/usage")
         .set("Authorization", &format!("Bearer {token}"))
         .set("Accept", "application/json")
-        .set("User-Agent", "jusage/0.1");
+        .set("User-Agent", "jusage/0.2");
     if let Some(account) = account.as_deref() {
         request = request.set("ChatGPT-Account-Id", account);
     }
@@ -488,6 +515,18 @@ mod tests {
         assert_eq!(mood_rgb(Some(58)), [15, 118, 110]);
         assert_eq!(mood_rgb(Some(12)), [180, 83, 9]);
         assert_eq!(mood_rgb(None), [140, 140, 140]);
+        assert_eq!(mood_rgb_on(Some(58), false), [45, 212, 191]);
+        assert_eq!(mood_rgb_on(Some(12), false), [251, 191, 36]);
+        assert_eq!(mood_rgb_on(None, false), [186, 186, 186]);
+    }
+
+    #[test]
+    fn the_count_starts_at_the_old_number_and_lands_on_the_new_one() {
+        assert_eq!(ease_count(43, 28, 0, 20), 43);
+        let mid = ease_count(43, 28, 10, 20);
+        assert!(mid < 43 && mid > 28, "mid was {mid}");
+        assert_eq!(ease_count(43, 28, 20, 20), 28);
+        assert_eq!(ease_count(10, 40, 20, 20), 40);
     }
 
     #[test]

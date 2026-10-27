@@ -1,5 +1,5 @@
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -28,7 +28,7 @@ use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegDeleteKeyValueW, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW,
     RegSetValueExW,
     HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE,
-    REG_DWORD, REG_SZ, RRF_RT_REG_SZ,
+    REG_DWORD, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Controls::{MARGINS, WM_MOUSELEAVE};
@@ -48,7 +48,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, HICON, ICONINFO, IDC_ARROW, IDC_HAND, SM_CXSMICON, SPI_GETWORKAREA,
     SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
     WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP,
-    WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_POPUP,
+    WM_SETCURSOR, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use crate::icon::remaining_icon;
@@ -56,6 +56,7 @@ use crate::usage::{self, Civil, FetchFail, Pane, Reading, Snapshot};
 
 const CARD_W: i32 = 440;
 const MOTION_FRAMES: u8 = 16;
+const COUNT_FRAMES: u8 = 20;
 const TRAY_MSG: u32 = 0x8000 + 1;
 const REFRESH_MSG: u32 = 0x8000 + 2;
 const SHOW_MSG: u32 = 0x8000 + 3;
@@ -63,13 +64,6 @@ const ICON_ID: u32 = 1;
 const HIT_CLOSE: u8 = 1;
 const HIT_REFRESH: u8 = 2;
 const HIT_QUIT: u8 = 3;
-
-const INK: u32 = 0x00171717;
-const MUTED: u32 = 0x005A5A5A;
-const WHITE: u32 = 0x00FFFFFF;
-const BUTTON: u32 = 0x00171717;
-const BUTTON_HOVER: u32 = 0x00323232;
-const SOFT: u32 = 0x00E8E6E2;
 
 #[derive(Clone)]
 enum View {
@@ -139,20 +133,38 @@ struct Card {
     delta_box: Option<Spot>,
     tiles: Vec<Tile>,
     hero: String,
-    word: String,
     scope: String,
     refill: String,
     note: String,
     delta: String,
     plan: String,
     hero_big: bool,
-    accent: u32,
     remaining: u32,
 }
 
 struct Motion {
     tick: u8,
     live: bool,
+}
+
+struct CountUp {
+    from: i32,
+    to: i32,
+    tick: u8,
+}
+
+struct Palette {
+    light: bool,
+    ink: u32,
+    muted: u32,
+    button: u32,
+    button_hover: u32,
+    button_text: u32,
+    soft: u32,
+    plate: [u8; 4],
+    tile: [u8; 4],
+    inset: [u8; 4],
+    track: [u8; 4],
 }
 
 static VIEW: Mutex<View> = Mutex::new(View::Loading);
@@ -166,6 +178,8 @@ static TRACKING: AtomicBool = AtomicBool::new(false);
 static WAKE: OnceLock<Sender<()>> = OnceLock::new();
 static DELTA: Mutex<String> = Mutex::new(String::new());
 static MOTION: Mutex<Motion> = Mutex::new(Motion { tick: MOTION_FRAMES, live: false });
+static COUNT: Mutex<CountUp> = Mutex::new(CountUp { from: 0, to: -1, tick: COUNT_FRAMES });
+static SHOWN: AtomicI32 = AtomicI32::new(-1);
 
 pub fn run() {
     unsafe {
@@ -226,7 +240,7 @@ pub fn run() {
             4,
         );
         enable_glass(hwnd);
-        let icon = make_icon(icon_px(), 0, usage::mood_rgb(None), false);
+        let icon = make_icon(icon_px(), 0, usage::mood_rgb_on(None, system_is_light()), false);
         ICON_SLOT.store(icon as usize, Ordering::SeqCst);
         add_tray(hwnd, icon, "Jusage 확인 중");
         apply_view();
@@ -349,18 +363,24 @@ unsafe fn apply_view() {
     if hwnd.is_null() {
         return;
     }
-    if IsWindowVisible(hwnd) != 0 {
+    let visible = IsWindowVisible(hwnd) != 0;
+    let counting = arm_count(visible);
+    if visible {
         place(hwnd);
     }
     InvalidateRect(hwnd, std::ptr::null(), FALSE);
+    if counting {
+        SetTimer(hwnd, 1, 16, None);
+    }
 }
 
 fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, String, Option<u16>) {
+    let light = system_is_light();
     match view {
         View::Loading => (
             "Jusage 확인 중".into(),
             0,
-            usage::mood_rgb(None),
+            usage::mood_rgb_on(None, light),
             "loading",
             None,
             String::new(),
@@ -369,7 +389,7 @@ fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, St
         View::NeedLogin => (
             "Jusage 로그인 필요".into(),
             0,
-            usage::mood_rgb(None),
+            usage::mood_rgb_on(None, light),
             "login",
             None,
             String::new(),
@@ -378,7 +398,7 @@ fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, St
         View::Failed(code) => (
             "Jusage 확인 실패".into(),
             0,
-            usage::mood_rgb(None),
+            usage::mood_rgb_on(None, light),
             "failed",
             None,
             String::new(),
@@ -389,7 +409,7 @@ fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, St
             (
                 usage::hover_tip(snapshot),
                 focus.remaining,
-                usage::mood_rgb(Some(focus.remaining)),
+                usage::mood_rgb_on(Some(focus.remaining), light),
                 "ready",
                 Some(focus.remaining),
                 snapshot.plan.clone(),
@@ -463,16 +483,15 @@ fn card_for(view: &View, dpi: i32) -> Card {
     let s = |value: i32| scale(value, dpi);
     let mut tiles = Vec::new();
     let hero;
-    let mut word = String::new();
     let mut scope = String::new();
     let mut refill = String::new();
     let mut note = String::new();
     let mut delta = String::new();
     let mut plan = String::new();
     let mut hero_big = false;
-    let mut accent = INK;
     let mut remaining = 0u32;
     let mut show_bar = false;
+    let light = system_is_light();
     match view {
         View::Loading => hero = "확인 중".to_string(),
         View::NeedLogin => {
@@ -488,9 +507,7 @@ fn card_for(view: &View, dpi: i32) -> Card {
             let focus = usage::focus_reading(snapshot);
             remaining = focus.remaining;
             hero = format!("{}%", focus.remaining);
-            word = usage::mood_word(focus.remaining).to_string();
             hero_big = true;
-            accent = rgb_color(usage::mood_rgb(Some(focus.remaining)));
             show_bar = true;
             scope = focus.name.to_string();
             plan = snapshot.plan.clone();
@@ -504,8 +521,8 @@ fn card_for(view: &View, dpi: i32) -> Card {
                 delta = line.clone();
             }
             if let Some(week) = week {
-                let mut session_tile = tile_from(session);
-                let mut week_tile = tile_from(week);
+                let mut session_tile = tile_from(session, light);
+                let mut week_tile = tile_from(week, light);
                 session_tile.hot = focus.pane == Pane::Session;
                 week_tile.hot = focus.pane == Pane::Week;
                 tiles.push(session_tile);
@@ -618,25 +635,23 @@ fn card_for(view: &View, dpi: i32) -> Card {
         delta_box,
         tiles,
         hero,
-        word,
         scope,
         refill,
         note,
         delta,
         plan,
         hero_big,
-        accent,
         remaining,
     }
 }
 
-fn tile_from(reading: Reading) -> Tile {
+fn tile_from(reading: Reading, light: bool) -> Tile {
     Tile {
         spot: Spot { x: 0, y: 0, w: 0, h: 0 },
         label: reading.name.to_string(),
         value: format!("{}%", reading.remaining),
         mood: usage::mood_word(reading.remaining).to_string(),
-        accent: rgb_color(usage::mood_rgb(Some(reading.remaining))),
+        accent: rgb_color(usage::mood_rgb_on(Some(reading.remaining), light)),
         hot: false,
     }
 }
@@ -672,6 +687,7 @@ unsafe fn show_panel(hwnd: HWND) {
         motion.tick = 0;
         motion.live = true;
     }
+    begin_open_count();
     place(hwnd);
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
@@ -708,7 +724,7 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_TIMER => {
-            let done = if let Ok(mut motion) = MOTION.lock() {
+            let motion_done = if let Ok(mut motion) = MOTION.lock() {
                 if motion.tick < MOTION_FRAMES {
                     motion.tick += 1;
                 }
@@ -716,11 +732,25 @@ unsafe extern "system" fn wnd_proc(
             } else {
                 true
             };
-            place(hwnd);
+            let count_done = if let Ok(mut count) = COUNT.lock() {
+                if count.to >= 0 && count.tick < COUNT_FRAMES {
+                    count.tick += 1;
+                }
+                count.to < 0 || count.tick >= COUNT_FRAMES
+            } else {
+                true
+            };
+            if !motion_done {
+                place(hwnd);
+            }
             InvalidateRect(hwnd, std::ptr::null(), FALSE);
-            if done {
+            if motion_done && count_done {
                 KillTimer(hwnd, 1);
             }
+            0
+        }
+        WM_SETTINGCHANGE => {
+            apply_view();
             0
         }
         WM_ERASEBKGND => 1,
@@ -833,22 +863,23 @@ unsafe fn paint(hwnd: HWND) {
     let view = VIEW.lock().ok().map(|view| view.clone()).unwrap_or(View::Loading);
     let card = card_for(&view, window_dpi(hwnd));
     let fonts = fonts_for(window_dpi(hwnd));
-    blend_round(hdc, Spot { x: 0, y: 0, w: card.width, h: card.height }, px(&card, 22), [255, 255, 255, 188], true);
-    paint_card(hdc, &card, &fonts);
+    let palette = palette_now();
+    blend_round(hdc, Spot { x: 0, y: 0, w: card.width, h: card.height }, px(&card, 22), palette.plate, true);
+    paint_card(hdc, &card, &fonts, &palette);
     EndPaint(hwnd, &ps);
 }
 
-unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, fonts: &Fonts) {
+unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, fonts: &Fonts, palette: &Palette) {
     let hover = HOVER.load(Ordering::Relaxed);
     let one = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
     if hover == HIT_CLOSE {
-        fill_round(hdc, card.close, card.close.h / 2, SOFT);
+        fill_round(hdc, card.close, card.close.h / 2, palette.soft);
     }
     SetTextCharacterExtra(hdc, px(card, 1).max(1));
     text_in(
         hdc,
         fonts.brand,
-        INK,
+        palette.ink,
         card.brand_box.rect(),
         "JUSAGE",
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
@@ -858,7 +889,7 @@ unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, f
     text_in(
         hdc,
         fonts.quiet,
-        MUTED,
+        palette.muted,
         rect(card.brand_box.x + brand_w, card.brand_box.y, px(card, 70), card.brand_box.h),
         "CODEX",
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
@@ -867,42 +898,42 @@ unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, f
         text_in(
             hdc,
             fonts.quiet,
-            MUTED,
+            palette.muted,
             card.plan_box.rect(),
             &card.plan,
             DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
     }
-    text_in(hdc, fonts.brand, MUTED, card.close.rect(), "×", DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    text_in(hdc, fonts.brand, palette.muted, card.close.rect(), "×", DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     if card.hero_big {
-        paint_meter(hdc, card, fonts);
+        paint_meter(hdc, card, fonts, palette);
     } else {
         text_in(
             hdc,
             fonts.lead,
-            INK,
+            palette.ink,
             card.hero_box.rect(),
             &card.hero,
             one,
         );
     }
     if let Some(scope) = card.scope_box {
-        text_in(hdc, fonts.quiet, MUTED, scope.rect(), &card.scope, one);
+        text_in(hdc, fonts.quiet, palette.muted, scope.rect(), &card.scope, one);
     }
     if let Some(bar) = card.bar {
-        blend_round(hdc, bar, bar.h, [24, 24, 24, 28], false);
-        let eased = (card.remaining as f32 * motion_ease()) as u32;
-        let filled = (bar.w as u32 * eased / 100) as i32;
+        blend_round(hdc, bar, bar.h, palette.track, false);
+        let shown = animated_remaining(card.remaining);
+        let filled = (bar.w as u32 * shown / 100) as i32;
         if filled > 0 {
-            let [r, g, b] = color_rgb(card.accent);
+            let [r, g, b] = usage::mood_rgb_on(Some(shown), palette.light);
             blend_round(hdc, Spot { w: filled.max(bar.h), ..bar }, bar.h, [r, g, b, 255], false);
         }
     }
     if let Some(spot) = card.refill_box {
-        text_in(hdc, fonts.body, MUTED, spot.rect(), &card.refill, one);
+        text_in(hdc, fonts.body, palette.muted, spot.rect(), &card.refill, one);
     }
     if let Some(spot) = card.note_box {
-        text_in(hdc, fonts.body, MUTED, spot.rect(), &card.note, one);
+        text_in(hdc, fonts.body, palette.muted, spot.rect(), &card.note, one);
     }
     for tile in &card.tiles {
         let radius = px(card, 16);
@@ -915,16 +946,16 @@ unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, f
                 w: (tile.spot.w - 2).max(1),
                 h: (tile.spot.h - 2).max(1),
             };
-            blend_round(hdc, inset, radius - 1, [255, 255, 255, 168], false);
+            blend_round(hdc, inset, radius - 1, palette.inset, false);
         } else {
-            blend_round(hdc, tile.spot, radius, [255, 255, 255, 130], false);
+            blend_round(hdc, tile.spot, radius, palette.tile, false);
         }
         let inner_x = tile.spot.x + px(card, 14);
         let inner_w = tile.spot.w - px(card, 28);
         text_in(
             hdc,
             fonts.quiet,
-            MUTED,
+            palette.muted,
             rect(inner_x, tile.spot.y + px(card, 10), inner_w, px(card, 18)),
             &tile.label,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
@@ -932,7 +963,7 @@ unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, f
         text_in(
             hdc,
             fonts.figure,
-            INK,
+            palette.ink,
             rect(inner_x, tile.spot.y + px(card, 28), inner_w, px(card, 28)),
             &tile.value,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
@@ -947,14 +978,14 @@ unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, f
         );
     }
     if let Some(spot) = card.delta_box {
-        text_in(hdc, fonts.body, INK, spot.rect(), &card.delta, one);
+        text_in(hdc, fonts.body, palette.ink, spot.rect(), &card.delta, one);
     }
-    let refresh_fill = if hover == HIT_REFRESH { BUTTON_HOVER } else { BUTTON };
+    let refresh_fill = if hover == HIT_REFRESH { palette.button_hover } else { palette.button };
     fill_round(hdc, card.refresh, card.refresh.h / 2, refresh_fill);
     text_in(
         hdc,
         fonts.body,
-        WHITE,
+        palette.button_text,
         card.refresh.rect(),
         "다시 확인",
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
@@ -962,38 +993,40 @@ unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, f
     text_in(
         hdc,
         fonts.body,
-        if hover == HIT_QUIT { INK } else { MUTED },
+        if hover == HIT_QUIT { palette.ink } else { palette.muted },
         card.quit.rect(),
         "끝내기",
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
 }
 
-unsafe fn paint_meter(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, fonts: &Fonts) {
-    let percent = text_size(hdc, fonts.hero, &card.hero);
-    let word = text_size(hdc, fonts.body, &card.word);
+unsafe fn paint_meter(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, fonts: &Fonts, palette: &Palette) {
+    let shown = animated_remaining(card.remaining);
+    SHOWN.store(shown as i32, Ordering::Relaxed);
+    let hero = format!("{shown}%");
+    let word = usage::mood_word(shown);
+    let accent = rgb_color(usage::mood_rgb_on(Some(shown), palette.light));
+    let percent = text_size(hdc, fonts.hero, &hero);
+    let word_size = text_size(hdc, fonts.body, word);
     let gap = px(card, 8);
-    let total = percent.cx + if card.word.is_empty() { 0 } else { gap + word.cx };
+    let total = percent.cx + gap + word_size.cx;
     let x = card.hero_box.x + (card.hero_box.w - total).max(0) / 2;
     let percent_y = card.hero_box.y + (card.hero_box.h - percent.cy).max(0) / 2;
     text_in(
         hdc,
         fonts.hero,
-        card.accent,
+        accent,
         rect(x, percent_y, percent.cx + px(card, 4), percent.cy + 4),
-        &card.hero,
+        &hero,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
-    if card.word.is_empty() {
-        return;
-    }
-    let word_y = card.hero_box.y + (card.hero_box.h - word.cy).max(0) / 2;
+    let word_y = card.hero_box.y + (card.hero_box.h - word_size.cy).max(0) / 2;
     text_in(
         hdc,
         fonts.body,
-        card.accent,
-        rect(x + percent.cx + gap, word_y, word.cx + px(card, 8), word.cy + 4),
-        &card.word,
+        accent,
+        rect(x + percent.cx + gap, word_y, word_size.cx + px(card, 8), word_size.cy + 4),
+        word,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
 }
@@ -1330,15 +1363,142 @@ fn motion_offset() -> i32 {
     left * left * 18 / (MOTION_FRAMES as i32 * MOTION_FRAMES as i32)
 }
 
-fn motion_ease() -> f32 {
-    let tick = MOTION.lock().map(|motion| motion.tick).unwrap_or(MOTION_FRAMES);
-    let t = (tick as f32 / MOTION_FRAMES as f32).clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
-}
-
 fn icon_px() -> u32 {
     let small = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16) as u32;
     (small.saturating_mul(2)).clamp(40, 64)
+}
+
+fn palette_now() -> Palette {
+    if system_is_light() {
+        Palette {
+            light: true,
+            ink: 0x00171717,
+            muted: 0x005A5A5A,
+            button: 0x00171717,
+            button_hover: 0x00323232,
+            button_text: 0x00FFFFFF,
+            soft: 0x00E8E6E2,
+            plate: [255, 255, 255, 188],
+            tile: [255, 255, 255, 130],
+            inset: [255, 255, 255, 168],
+            track: [24, 24, 24, 28],
+        }
+    } else {
+        Palette {
+            light: false,
+            ink: 0x00F0F2F2,
+            muted: 0x00A8A8A0,
+            button: 0x00F4F4F1,
+            button_hover: 0x00FFFFFF,
+            button_text: 0x00141414,
+            soft: 0x00323A42,
+            plate: [18, 20, 24, 206],
+            tile: [255, 255, 255, 22],
+            inset: [28, 32, 38, 220],
+            track: [255, 255, 255, 32],
+        }
+    }
+}
+
+fn system_is_light() -> bool {
+    let sub = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let name = wide("SystemUsesLightTheme");
+    let mut value = 1u32;
+    let mut size = 4u32;
+    let mut kind = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            sub.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            &mut kind,
+            &mut value as *mut u32 as *mut c_void,
+            &mut size,
+        )
+    };
+    status != 0 || value != 0
+}
+
+fn focus_left(view: &View) -> Option<i32> {
+    match view {
+        View::Ready(snapshot) => Some(usage::focus_reading(snapshot).remaining as i32),
+        _ => None,
+    }
+}
+
+fn animated_remaining(target: u32) -> u32 {
+    let Ok(count) = COUNT.lock() else {
+        return target;
+    };
+    if count.to < 0 {
+        return target;
+    }
+    usage::ease_count(count.from, count.to, count.tick, COUNT_FRAMES) as u32
+}
+
+fn arm_count(visible: bool) -> bool {
+    let Some(view) = VIEW.lock().ok().map(|view| view.clone()) else {
+        return false;
+    };
+    let Some(target) = focus_left(&view) else {
+        if let Ok(mut count) = COUNT.lock() {
+            count.to = -1;
+            count.tick = COUNT_FRAMES;
+        }
+        return false;
+    };
+    if !visible {
+        if let Ok(mut count) = COUNT.lock() {
+            count.from = target;
+            count.to = target;
+            count.tick = COUNT_FRAMES;
+        }
+        return false;
+    }
+    let shown = SHOWN.load(Ordering::Relaxed);
+    let current = COUNT.lock().map(|count| {
+        if count.to >= 0 {
+            usage::ease_count(count.from, count.to, count.tick, COUNT_FRAMES)
+        } else {
+            shown
+        }
+    }).unwrap_or(shown);
+    if current < 0 || current == target {
+        if let Ok(mut count) = COUNT.lock() {
+            count.from = target;
+            count.to = target;
+            count.tick = COUNT_FRAMES;
+        }
+        return false;
+    }
+    if let Ok(mut count) = COUNT.lock() {
+        count.from = current;
+        count.to = target;
+        count.tick = 0;
+    }
+    true
+}
+
+fn begin_open_count() {
+    let Some(view) = VIEW.lock().ok().map(|view| view.clone()) else {
+        return;
+    };
+    let Some(target) = focus_left(&view) else {
+        return;
+    };
+    let shown = SHOWN.load(Ordering::Relaxed);
+    if let Ok(mut count) = COUNT.lock() {
+        if shown >= 0 && shown != target {
+            count.from = shown;
+            count.to = target;
+            count.tick = 0;
+        } else {
+            count.from = target;
+            count.to = target;
+            count.tick = COUNT_FRAMES;
+        }
+    }
 }
 
 fn color_rgb(color: u32) -> [u8; 3] {
