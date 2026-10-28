@@ -130,7 +130,7 @@ try {
         Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'PE comparison failed.' }
 
-    $previewDir = Join-Path $env:RUNNER_TEMP 'jusage-rc-preview'
+    $previewDir = Join-Path $env:RUNNER_TEMP 'jusage rc preview'
     $qaResults.synthetic_preview = 'RUNNING'
 
     if (Test-Path -LiteralPath $previewDir) {
@@ -140,97 +140,120 @@ try {
     $previewCases = [System.Collections.Generic.List[string]]::new()
     $previewCasesPath = Join-Path $evidence 'preview-failure-cases.txt'
     [IO.File]::WriteAllText($previewCasesPath, '', [Text.UTF8Encoding]::new($false))
+    function Invoke-Preview {
+        param(
+            [Parameter(Mandatory)][string]$Executable,
+            [Parameter(Mandatory)][string]$OutputDirectory,
+            [Parameter(Mandatory)][string]$CaseName,
+            [Parameter(Mandatory)][int]$ExpectedExitCode
+        )
+
+        $quotedOutputDirectory = '"{0}"' -f $OutputDirectory
+        try {
+            $process = Start-Process -FilePath $Executable -ArgumentList @('--preview', $quotedOutputDirectory) -WindowStyle Hidden -Wait -PassThru
+        }
+        catch {
+            $script:previewCases.Add("${CaseName}=FAIL; exit_code=NOT_AVAILABLE; expected_exit_code=$ExpectedExitCode")
+            [IO.File]::WriteAllLines($script:previewCasesPath, $script:previewCases.ToArray(), [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllLines((Join-Path $script:evidence 'preview-error.txt'), @("stage=$CaseName", 'exit_code=NOT_AVAILABLE', "expected_exit_code=$ExpectedExitCode"), [Text.UTF8Encoding]::new($false))
+            throw "Could not start Preview case '$CaseName'."
+        }
+
+        $exitCode = [int]$process.ExitCode
+        $status = if ($exitCode -eq $ExpectedExitCode) { 'PASS' } else { 'FAIL' }
+        $script:previewCases.Add("${CaseName}=$status; exit_code=$exitCode; expected_exit_code=$ExpectedExitCode")
+        [IO.File]::WriteAllLines($script:previewCasesPath, $script:previewCases.ToArray(), [Text.UTF8Encoding]::new($false))
+        if ($exitCode -ne $ExpectedExitCode) {
+            $failureStage = switch ($exitCode) {
+                20 { 'preview output argument' }
+                21 { 'absolute preview path resolution' }
+                22 { 'installed-profile path guard' }
+                23 { 'preview path reparse resolution' }
+                24 { 'isolated profile root resolution' }
+                25 { 'preview output directory creation' }
+                26 { 'configure isolated preview profile' }
+                30 { 'preview bitmap validation' }
+                31 { 'screen device context acquisition' }
+                32 { 'memory device context creation' }
+                33 { 'DIB section creation' }
+                34 { 'DIB section selection' }
+                36 { 'preview bitmap write' }
+                37 { 'preview measure write' }
+                38 { 'resolve isolated preview history' }
+                39 { 'write isolated preview history' }
+                default { $CaseName }
+            }
+            [IO.File]::WriteAllLines((Join-Path $script:evidence 'preview-error.txt'), @("stage=$failureStage", "case=$CaseName", "exit_code=$exitCode", "expected_exit_code=$ExpectedExitCode"), [Text.UTF8Encoding]::new($false))
+            throw "Preview case '$CaseName' returned ExitCode $exitCode; expected $ExpectedExitCode."
+        }
+        return $exitCode
+    }
+
     $oldLocalAppData = $env:LOCALAPPDATA
     try {
-        $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'jusage-preview-guard-profile'
+        $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'jusage preview guard profile'
         $forbiddenPreview = Join-Path (Join-Path $env:LOCALAPPDATA 'Jusage') 'must-not-be-created'
-        & $exeA --preview $forbiddenPreview 2>$null
-        $guardExitCode = $LASTEXITCODE
-        if ($guardExitCode -ne 22) {
-            throw "Installed-profile preview path returned unexpected exit code $guardExitCode."
-        }
+        $guardExitCode = Invoke-Preview -Executable $exeA -OutputDirectory $forbiddenPreview -CaseName 'installed_profile_path' -ExpectedExitCode 22
         if (Test-Path -LiteralPath $forbiddenPreview) {
+            [IO.File]::WriteAllLines((Join-Path $evidence 'preview-error.txt'), @('stage=installed_profile_path_no_write', "exit_code=$guardExitCode"), [Text.UTF8Encoding]::new($false))
             throw 'Installed-profile preview guard created the forbidden path.'
         }
-        $previewCases.Add("installed_profile_path=PASS; exit_code=$guardExitCode; target_created=false")
+        $previewCases.Add('installed_profile_target_created=false')
         [IO.File]::WriteAllLines($previewCasesPath, $previewCases.ToArray(), [Text.UTF8Encoding]::new($false))
     }
     finally { $env:LOCALAPPDATA = $oldLocalAppData }
 
-    $bitmapFailureDir = Join-Path $env:RUNNER_TEMP 'jusage-preview-bitmap-write-failure'
+    $bitmapFailureDir = Join-Path $env:RUNNER_TEMP 'jusage preview bitmap write failure'
     New-Item -ItemType Directory -Path $bitmapFailureDir -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $bitmapFailureDir 'dark-ready.bmp') -Force | Out-Null
     try {
-        & $exeA --preview $bitmapFailureDir 2>$null
-        $bitmapExitCode = $LASTEXITCODE
-        if ($bitmapExitCode -ne 36) {
-            throw "Preview bitmap write failure returned unexpected exit code $bitmapExitCode."
-        }
+        $bitmapExitCode = Invoke-Preview -Executable $exeA -OutputDirectory $bitmapFailureDir -CaseName 'bitmap_write_failure' -ExpectedExitCode 36
         if (-not (Test-Path -LiteralPath (Join-Path $bitmapFailureDir 'dark-ready.bmp') -PathType Container)) {
+            [IO.File]::WriteAllLines((Join-Path $evidence 'preview-error.txt'), @('stage=bitmap_failure_blocker_preserved', "exit_code=$bitmapExitCode"), [Text.UTF8Encoding]::new($false))
             throw 'Preview bitmap failure changed its directory blocker.'
         }
-        $previewCases.Add("bitmap_write_failure=PASS; exit_code=$bitmapExitCode")
+        $previewCases.Add('bitmap_failure_blocker_preserved=true')
         [IO.File]::WriteAllLines($previewCasesPath, $previewCases.ToArray(), [Text.UTF8Encoding]::new($false))
     }
     finally { Remove-Item -LiteralPath $bitmapFailureDir -Recurse -Force -ErrorAction SilentlyContinue }
 
-    $measureFailureDir = Join-Path $env:RUNNER_TEMP 'jusage-preview-measure-write-failure'
+    $measureFailureDir = Join-Path $env:RUNNER_TEMP 'jusage preview measure write failure'
     New-Item -ItemType Directory -Path $measureFailureDir -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $measureFailureDir 'measure.txt') -Force | Out-Null
     try {
-        & $exeA --preview $measureFailureDir 2>$null
-        $measureExitCode = $LASTEXITCODE
-        if ($measureExitCode -ne 37) {
-            throw "Preview measure write failure returned unexpected exit code $measureExitCode."
-        }
+        $measureExitCode = Invoke-Preview -Executable $exeA -OutputDirectory $measureFailureDir -CaseName 'measure_write_failure' -ExpectedExitCode 37
         if (-not (Test-Path -LiteralPath (Join-Path $measureFailureDir 'measure.txt') -PathType Container)) {
+            [IO.File]::WriteAllLines((Join-Path $evidence 'preview-error.txt'), @('stage=measure_failure_blocker_preserved', "exit_code=$measureExitCode"), [Text.UTF8Encoding]::new($false))
             throw 'Preview measure failure changed its directory blocker.'
         }
-        $previewCases.Add("measure_write_failure=PASS; exit_code=$measureExitCode")
+        $previewCases.Add('measure_failure_blocker_preserved=true')
         [IO.File]::WriteAllLines($previewCasesPath, $previewCases.ToArray(), [Text.UTF8Encoding]::new($false))
     }
     finally { Remove-Item -LiteralPath $measureFailureDir -Recurse -Force -ErrorAction SilentlyContinue }
-    & $exeA --preview $previewDir 2>$null
-    $previewExitCode = $LASTEXITCODE
+    $previewExitCode = Invoke-Preview -Executable $exeA -OutputDirectory $previewDir -CaseName 'normal_preview' -ExpectedExitCode 0
     $measurePath = Join-Path $previewDir 'measure.txt'
     if (Test-Path -LiteralPath $measurePath) {
         Copy-Item -LiteralPath $measurePath -Destination (Join-Path $evidence 'preview-measure.txt') -Force
     }
-    if ($previewExitCode -ne 0) {
-        $previewStage = switch ($previewExitCode) {
-            20 { 'preview output argument' }
-            21 { 'absolute preview path resolution' }
-            22 { 'installed-profile path guard' }
-            23 { 'preview path reparse resolution' }
-            24 { 'isolated profile root resolution' }
-            25 { 'preview output directory creation' }
-            26 { 'configure isolated preview profile' }
-            30 { 'preview bitmap validation' }
-            31 { 'screen device context acquisition' }
-            32 { 'memory device context creation' }
-            33 { 'DIB section creation' }
-            34 { 'DIB section selection' }
-            36 { 'preview bitmap write' }
-            37 { 'preview measure write' }
-            38 { 'resolve isolated preview history' }
-            39 { 'write isolated preview history' }
-            default { 'unknown preview stage' }
-        }
-        [IO.File]::WriteAllText((Join-Path $evidence 'preview-error.txt'), "exit_code=$previewExitCode`nstage=$previewStage`n", [Text.UTF8Encoding]::new($false))
-        throw "Offscreen preview failed at $previewStage (exit code $previewExitCode)."
-    }
     if (-not (Test-Path -LiteralPath $measurePath)) {
-        [IO.File]::WriteAllText((Join-Path $evidence 'preview-error.txt'), "exit_code=0`nstage=process exited without measure.txt`n", [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllLines((Join-Path $evidence 'preview-error.txt'), @('stage=normal_preview_measure_file', "exit_code=$previewExitCode"), [Text.UTF8Encoding]::new($false))
         throw 'Preview exited successfully without producing measure.txt.'
     }
     $measure = Get-Content -LiteralPath $measurePath -Raw
     if ($measure -notmatch 'mode=preview' -or $measure -notmatch 'copy_home=false' -or $measure -notmatch 'registry=false') {
+        [IO.File]::WriteAllLines((Join-Path $evidence 'preview-error.txt'), @('stage=normal_preview_mode_validation', "exit_code=$previewExitCode"), [Text.UTF8Encoding]::new($false))
         throw 'Preview did not report isolated offscreen mode.'
     }
     $renderRows = @($measure -split "`r?`n" | Where-Object { $_ -match '\.bmp ok=' })
-    if ($renderRows.Count -lt 15 -or @($renderRows | Where-Object { $_ -notmatch 'ok=1 ' }).Count -gt 0) {
+    $sceneRows = @($renderRows | Where-Object { $_ -notmatch '^tray-' })
+    $trayRows = @($renderRows | Where-Object { $_ -match '^tray-' })
+    $bmpFiles = @(Get-ChildItem -LiteralPath $previewDir -Filter '*.bmp' -File)
+    if ($sceneRows.Count -ne 19 -or $trayRows.Count -ne 3 -or $bmpFiles.Count -ne 22 -or @($renderRows | Where-Object { $_ -notmatch 'ok=1 ' }).Count -gt 0) {
+        [IO.File]::WriteAllLines((Join-Path $evidence 'preview-error.txt'), @('stage=normal_preview_bmp_validation', "exit_code=$previewExitCode"), [Text.UTF8Encoding]::new($false))
         throw 'One or more synthetic offscreen render cases failed.'
     }
+    $previewCases.Add("preview_outputs=PASS; scene_bmps=$($sceneRows.Count); tray_icon_bmps=$($trayRows.Count); total_bmps=$($bmpFiles.Count); measure_txt=true")
+    [IO.File]::WriteAllLines($previewCasesPath, $previewCases.ToArray(), [Text.UTF8Encoding]::new($false))
     $testedSha = (Get-FileHash -LiteralPath $exeA -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($testedSha -ne $shaA) { throw 'The preview-tested executable changed after its build hash was recorded.' }
     $qaResults.synthetic_preview = 'PASS'
