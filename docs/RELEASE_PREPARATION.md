@@ -1,64 +1,60 @@
-# Jusage V0.3 RC 준비 기록
+# Jusage V0.3 RC 준비 및 검증 기록
 
-상태: **RC_HOLD**. 저장소는 Draft PR로 유지한다. 이 문서는 실제 검증이 끝난 뒤 그 증거와 소스 커밋을 기록한다.
+현재 판정: **HOLD**. Draft PR #1만 유지하며 `main` 병합, 공개 Release, 운영 설치 교체는 금지한다.
 
-## 소스 변경 검토
+## 기준 소스와 검토
 
-초기 미커밋 변경 5개 파일을 보존한 채 검토했다.
+- Windows 검증 소스 커밋: `4191bf4c0c5a37b0b2175815d4472a223cc3f5b0`.
+- 초기 미커밋 변경 5개 파일을 보존해 검토했다. Midnight Slate 면·본문 숫자·상세 레이아웃, 긴 날짜 줄바꿈, 한도 초기화 전후 기록 분리와 짧은 표본 예측 안내를 반영했고 계산식은 바꾸지 않았다.
+- 추가된 회귀 사례는 긴 한국어/AM·PM 초기화 시각과 주기 초기화 전후 기록이다.
 
-| 파일 | 검토한 변경 |
+## 아이콘 출처 및 라이선스
+
+- [`assets/jusage.svg`](../assets/jusage.svg)는 Jusage 전용 기하학적 J 모노그램과 진행 표시점으로 새로 작성했다. 기존 아이콘·타사 이미지·외부 폰트를 사용하지 않았다.
+- [`tools/build_icon.py`](../tools/build_icon.py)는 Python 표준 라이브러리만으로 SVG, 투명 16·24·32·48·64·128·256px ICO와 PNG 미리보기를 만든다. `python tools/build_icon.py`로 재생성하며 ICO 헤더·이미지 크기를 자체 확인한다.
+- 트레이 아이콘의 사용량 숫자 표시 경로는 기존 코드에 유지되어 있다. 아이콘 미리보기는 실제 Windows 트레이 캡처가 아니다.
+- Jusage 코드는 [`LICENSE`](../LICENSE)의 MIT, `Copyright (c) 2026 ju0o`로 배포한다. Windows MSVC Cargo.lock 그래프의 48개 패키지(일반 45개, 빌드 전용 3개)에 대해 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)와 원문 라이선스 76개를 [`THIRD_PARTY_LICENSES/`](../THIRD_PARTY_LICENSES/)에 보존한다. 이 고지는 Jusage MIT와 별도이며 법률 의견이 아니다.
+- 준비된 Windows 패키지 절차는 `jusage.exe`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_LICENSES/`를 묶는다. 최종 ZIP은 아직 생성·검증하지 않았다.
+
+## Windows 빌드 및 재현성 결과
+
+2026-10-28, 격리 임시 체크아웃에서 소스 커밋 `4191bf4c0c5a37b0b2175815d4472a223cc3f5b0`를 빌드했다. 사용자 설치 경로·설정·기록·시작 항목은 사용하지 않았다.
+
+| 항목 | 결과 |
 | --- | --- |
-| `CHANGELOG.md`, `README.md` | 불투명 배경, 본문 숫자색, 상세 화면 구획, 주기 초기화 기록, 짧은 표본 예측 안내 설명 |
-| `src/settings.rs` | 긴 초기화 날짜·시간을 두 줄로 표시하는 경계 사례 |
-| `src/usage.rs` | 한도 주기 초기화 전후를 일일 기록에서 분리하고, 빈 기록 안내와 짧은 표본 추정 문구를 표시 |
-| `src/win.rs` | 불투명 Midnight Slate 면, 본문색 대표 숫자, 날짜 줄바꿈, 상세 간격, 조용한 새로고침 표시 |
+| Rust | `rustc 1.90.0 (1159e78c4 2025-09-14)`, LLVM 20.1.8 |
+| Cargo | `cargo 1.90.0 (840b83a10 2025-07-30)` |
+| Windows 환경 | Windows 11 Pro x64, build 26200; MSVC toolset 14.44.35207, linker 14.44.35226.0 |
+| 단위 테스트 | Windows `cargo +1.90.0 test --locked --quiet`: 44 passed, 0 failed |
+| Release 명령 | PowerShell: `$env:RUSTFLAGS = '-C link-arg=/Brepro'; cargo +1.90.0 build --release --locked --target x86_64-pc-windows-msvc --target-dir <temp>\a` (A), then repeat with `<temp>\b` (B) |
+| 빌드 A SHA-256 | `b5a1df43aaaae30813200e6dadda4c993ac4a0b5fe55e1b5d09f7b842f3f3a99` |
+| 빌드 B SHA-256 | `412aeb453cba88011e6e328ba6d33d8233d0b1557ebae0377c29383b7b3a87c2` |
+| 실행 검증 SHA-256 | 빌드 A와 동일한 `b5a1df43aaaae30813200e6dadda4c993ac4a0b5fe55e1b5d09f7b842f3f3a99`로 `--preview` 실행 |
+| 오프스크린 렌더 | 합성 BMP 19개 성공 보고; `mode=preview`, `copy_home=false`, `registry=false` 확인 |
 
-초기화 사례는 전날 기록을 보존하면서 오늘 최저·시작값을 새 주기 값으로 바꾸는 회귀 테스트로 다룬다. 사용량 계산식을 바꾸지 않는다. 이 검토는 코드 검토이며 Windows GUI 수용 검수는 별도다.
+독립 빌드 A/B는 **불일치**했다. 집중 PE 비교에서 `.text`는 동일했지만 COFF 타임스탬프(`0x573BA09F` / `0x7103DBE8`), `.rdata`(368,128바이트 중 64바이트 차이, 6 구간), `.rsrc`(373,760바이트 중 56바이트 차이)가 달랐다. CodeView 항목은 `jusage.pdb`를 가리켰고 두 빌드의 PDB 경로 해시는 같았지만 디버그 디렉터리 타임스탬프·식별 데이터는 일치하지 않았다. `/Brepro`가 적용된 빌드에서도 차이가 남았다. 이 한 차례 비교로 관찰된 차이는 기록했지만 `.rsrc` 변동의 생성 원인은 확정하지 못했다. 추가 반복 조사는 하지 않았다.
 
-## 아이콘
+따라서 빌드 A는 실행 시험을 통과했어도 재현 가능한 배포 후보로 확정하지 않는다. A와 B 중 어느 파일도 공개 배포물로 지정하지 않는다.
 
-- 원본: [`assets/jusage.svg`](../assets/jusage.svg). 도형은 Jusage용으로 새로 만든 기하학적 J 모노그램과 진행 표시점이다.
-- 생성기: [`tools/build_icon.py`](../tools/build_icon.py). Python 표준 라이브러리로 SVG, 투명 배경의 16·24·32·48·64·128·256px ICO 및 PNG 미리보기를 만든다.
-- 재생성: `python tools/build_icon.py`.
-- 제작 과정은 기존 아이콘 파일이나 타사 이미지·폰트·외부 다운로드를 사용하지 않는다. 트레이의 사용량 숫자는 기존 코드 생성 경로에 남아 있다.
-- ICO 헤더·각 DIB 차원·크기를 생성기에서 자체 점검한다. PNG 미리보기는 오프스크린 자산 검토용이며 실제 Windows 트레이 캡처가 아니다.
+검증은 비대화형 SSH에서 수행했다. `--preview` 프로세스가 끝났고 임시 빌드 경로를 사용하는 Jusage 프로세스가 0개임을 확인한 뒤 해당 임시 폴더를 삭제했다. GUI 창이나 사용자 설치 파일은 열거나 수정하지 않았다.
 
-## 라이선스와 패키지
+## 시각 증거
 
-- Jusage 코드: [`LICENSE`](../LICENSE), MIT, `Copyright (c) 2026 ju0o`.
-- Windows MSVC Cargo.lock 그래프: 48개 패키지/버전(일반 의존성 45개, 추가 빌드 전용 3개). 이는 Cargo 그래프이며 런타임 DLL 수가 아니다.
-- [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)는 각 Cargo 라이선스 식과 출처를 적고, [`THIRD_PARTY_LICENSES/`](../THIRD_PARTY_LICENSES/)는 업스트림 라이선스·고지 파일 76개를 원문 그대로 보존한다.
-- Jusage MIT와 각 업스트림 라이선스는 별도다. Windows RC 패키지는 `jusage.exe`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_LICENSES/`를 포함해야 한다.
-- 이 인벤토리는 Cargo 메타데이터와 보존된 원문을 바탕으로 한 배포 준비 점검이며 법률 의견은 아니다.
+[`docs/evidence/v0.3-preview/`](evidence/v0.3-preview/)에는 Windows `--preview`에서 합성 데이터로 만든 PNG를 둔다. Midnight Slate 기본·두 사용량 카드·상세·설정, 라이트, 오래된 데이터, 오류 화면을 포함한다. 이 자료는 소스 SHA `4191bf4c0c5a37b0b2175815d4472a223cc3f5b0`의 디자인 검토용이며 실제 HWND/트레이 캡처나 실제 계정 자료가 아니다. 시각 검토에서 이 렌더 크기의 잘림·겹침은 보이지 않았다. 실제 DPI·모니터·입력 검증을 대체하지 않는다.
 
-## 빌드 추적성 및 재현성
+## Windows QA 및 설치 시나리오
 
-최종 Windows 빌드 증거는 한 RC 소스 커밋에서 생성해야 한다. `qa/windows/run-rc.ps1`은 다음을 기록하는 수동 CI 절차다.
+- [`.github/workflows/windows-qa.yml`](../.github/workflows/windows-qa.yml)은 공개 `windows-latest` GitHub-hosted VM에서 실행되도록 준비한 수동 `workflow_dispatch` 워크플로다. Runner는 별도 VM으로 제공되므로 운영 PC에 설치하지 않고 격리 파일·레지스트리 fixture를 실행할 수 있다.
+- 워크플로는 고정 Rust 도구체인, Windows Release A/B 빌드, 단위 테스트, PE 비교, 합성 `--preview`, V0.2.0 공개 바이너리 해시 확인, 임시 프로필 기반 업그레이드·설정/기록 보존·시작 레지스트리·중복 프로세스·롤백 시나리오, 라이선스 포함 패키징을 준비했다. 실제 V0.2.0 운영 설치나 Codex 인증은 사용하지 않는다.
+- GitHub 문서상 수동 워크플로는 파일이 기본 브랜치에 있어야 트리거된다. 병합 금지 상태라 이번 Draft 브랜치에서는 실행할 수 없고, 워크플로도 실행하지 않았다. [수동 워크플로 실행 요건](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+- 격리 설치 fixture는 GitHub runner에서만 실행하도록 준비했다. 사용자 PC의 HKCU 시작 레지스트리를 건드리거나 기존 설치를 읽지 않기 위해 이 호스트에서는 실행하지 않았다.
+- GitHub-hosted `windows-latest` VM, 빌드·테스트·패키지 절차의 설계 범위는 구분되어 있다. Actions 결과가 없으므로 fixture 업그레이드·롤백·패키지 생성은 **BLOCKED / NOT_RUN**이다.
 
-- 소스 커밋 SHA, Rust/Cargo와 MSVC 컴파일러·링커 버전
-- `cargo test --locked` 및 `cargo build --release --locked --target x86_64-pc-windows-msvc`
-- `/Brepro`가 적용된 별도 대상 폴더 두 곳의 Release SHA-256
-- 오프스크린 미리보기로 실제 실행한 후보 실행 파일 SHA-256
-- 패키지 ZIP SHA-256과 PE/COFF 헤더, 디버그 디렉터리, `.text`·`.rdata`·`.rsrc` 등의 섹션 해시 비교
-- `.rdata`의 절대 경로 흔적은 전체 경로를 기록하지 않고 파일명·길이·해시만 남긴다. CodeView PDB 경로도 전체 경로를 남기지 않는다.
+## 미검증 범위와 판정
 
-별도 대상 폴더 빌드가 바이트 단위로 다르면 CI는 진단 자료를 남기고 실패한다. 일치하지 않는 산출물을 같은 후보라고 부르지 않는다. PE 헤더, 디버그 경로, `.rdata`, `.rsrc` 차이는 한 차례 집중 비교해 기록하고, 해결되지 않으면 원인 미확정으로 남긴다.
+- 배포 후보 파일과 테스트 대상 파일의 동일성은 A 단독 실행에 대해서만 확인했다. A/B 재현성이 실패했으므로 배포용 단일 RC는 **NOT_ESTABLISHED**.
+- GitHub Actions, 합성 설치 업그레이드·롤백, 최종 ZIP 패키지는 미실행.
+- 실제 트레이 GUI 상호작용, 125%·150% Windows DPI, 듀얼 모니터, 실제 Codex 계정은 미검증. 이번 작업은 창이나 콘솔을 열지 않았다.
+- 기존 V0.2.0 운영본·기록·설정·시작 항목은 변경하지 않았다.
 
-**현재 새 RC 실행 파일의 SHA-256 및 실제 실행 파일 QA SHA-256은 아직 기록되지 않았다.** 예전 커밋의 GUI 검증 해시를 이 RC 증거로 재사용하지 않는다.
-
-## Windows Actions 및 설치 시나리오
-
-- [Windows RC QA workflow](../.github/workflows/windows-qa.yml)는 `windows-latest`와 수동 `workflow_dispatch`만 사용한다. 공개 V0.2.0 실행 파일의 SHA-256을 확인하고, 임시 `LOCALAPPDATA`·빈 `CODEX_HOME`·합성 설정/기록·러너 전용 시작 레지스트리를 사용한다.
-- 후보의 설치 경로 self-copy, 설정/기록 보존, 시작 레지스트리, 중복 프로세스 방지, 종료 후 V0.2.0 파일 복원, 파일 잠금으로 인한 교체 거부 시나리오를 준비했다. 이는 합성 파일/레지스트리 시뮬레이션이다. 실제 제품 설치 관리자, 실행 중 바이너리 교체, 제품 자체의 롤백 처리, GUI 사용성은 검증하지 않는다.
-- `--preview` 검증은 합성 데이터 오프스크린 렌더링이다. 실제 GUI 상호작용·DPI·듀얼 모니터는 이 워크플로의 PASS 범위가 아니다.
-- 워크플로는 승인 없이 실행하지 않았다. GitHub 문서상 `workflow_dispatch` 실행 버튼을 사용하려면 워크플로 파일이 기본 브랜치에 있어야 한다. 현재 병합 금지로 인해 Draft 브랜치에서 이 Action을 실행할 수 없다. [GitHub 수동 워크플로 실행 안내](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
-- 업그레이드·롤백을 실제 운영 설치본에서 시험하지 않는다. 별도 VM/사용자 승인 환경도 사용하지 않았다.
-
-## 미검증 범위와 출시 판정
-
-- 새 RC의 Windows Release 실행 파일은 Actions를 실행하기 전까지 미검증이다.
-- 실제 `--isolated` 트레이 표시·마우스/키보드 입력, 실제 125%·150% DPI, 듀얼 모니터 이동은 미검증이다.
-- 실제 설치 관리자나 실행 중 업그레이드·실패 복구 절차는 존재하거나 검증된 것으로 주장하지 않는다. Actions 시나리오는 파일/레지스트리 합성 검증이다.
-- V0.2.0 운영본, 사용자 설정·기록, 시작 항목은 이 RC QA에서 변경하지 않는다.
-
-위 범위가 남아 있는 동안 권고는 **HOLD**다. Draft PR 외의 병합, 운영본 교체, 공개 Release를 하지 않는다.
+재현성 실패와 남은 설치·GUI gate 때문에 V0.3 권고는 **HOLD**다. `main` 병합, 운영본 교체, 공개 Release는 하지 않는다.
