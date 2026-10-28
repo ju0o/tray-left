@@ -83,6 +83,30 @@ const ROW_THEME: u8 = 14;
 const ROW_DONE: u8 = 15;
 const ROW_PATH: u8 = 16;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreviewFailure {
+    pub code: i32,
+    pub stage: &'static str,
+    pub scene: Option<&'static str>,
+}
+
+impl PreviewFailure {
+    const fn new(code: i32, stage: &'static str) -> Self {
+        Self {
+            code,
+            stage,
+            scene: None,
+        }
+    }
+
+    const fn in_scene(self, scene: &'static str) -> Self {
+        Self {
+            scene: Some(scene),
+            ..self
+        }
+    }
+}
+
 #[derive(Clone)]
 enum View {
     Loading,
@@ -287,31 +311,42 @@ static COUNT: Mutex<CountUp> = Mutex::new(CountUp {
 static SHOWN: AtomicI32 = AtomicI32::new(-1);
 
 /// Refuse a preview folder that resolves onto the installed profile, before any directory is created.
-fn guarded_preview_dir(raw: &std::path::Path) -> Option<std::path::PathBuf> {
+fn guarded_preview_dir(raw: &std::path::Path) -> Result<std::path::PathBuf, PreviewFailure> {
     let named = match win32_full_path(raw) {
         Some(path) => path,
-        None => crate::settings::windows_absolute(raw)?,
+        None => crate::settings::windows_absolute(raw)
+            .ok_or(PreviewFailure::new(21, "resolve absolute preview path"))?,
     };
     if !crate::settings::isolates_from_product(std::path::Path::new(&named)) {
-        return None;
+        return Err(PreviewFailure::new(
+            22,
+            "reject installed-profile preview path",
+        ));
     }
-    let resolved = resolve_reparse(&named)?;
+    let resolved = resolve_reparse(&named, 23, "resolve preview path reparse points")?;
     if !crate::settings::isolates_from_product(std::path::Path::new(&resolved)) {
-        return None;
+        return Err(PreviewFailure::new(
+            22,
+            "reject installed-profile preview path",
+        ));
     }
     let product = installed_product_dir()?;
     if crate::settings::path_is_within(&resolved, &product.to_string_lossy()) {
-        return None;
+        return Err(PreviewFailure::new(
+            22,
+            "reject installed-profile preview path",
+        ));
     }
-    Some(std::path::PathBuf::from(resolved))
+    Ok(std::path::PathBuf::from(resolved))
 }
 
-fn installed_product_dir() -> Option<std::path::PathBuf> {
-    let local = std::env::var("LOCALAPPDATA").ok()?;
+fn installed_product_dir() -> Result<std::path::PathBuf, PreviewFailure> {
+    let local = std::env::var("LOCALAPPDATA")
+        .map_err(|_| PreviewFailure::new(24, "read isolated profile root"))?;
     let product = crate::settings::profile_dir(std::path::Path::new(&local), false);
     let named = win32_full_path(&product).unwrap_or_else(|| product.to_string_lossy().into_owned());
-    let resolved = resolve_reparse(&named).unwrap_or(named);
-    Some(std::path::PathBuf::from(resolved))
+    let resolved = resolve_reparse(&named, 24, "resolve isolated profile root")?;
+    Ok(std::path::PathBuf::from(resolved))
 }
 
 fn win32_full_path(path: &std::path::Path) -> Option<String> {
@@ -332,18 +367,26 @@ fn win32_full_path(path: &std::path::Path) -> Option<String> {
     crate::settings::windows_absolute(std::path::Path::new(&text))
 }
 
-fn resolve_reparse(absolute: &str) -> Option<String> {
-    let absolute = crate::settings::windows_absolute(std::path::Path::new(absolute))?;
+fn resolve_reparse(
+    absolute: &str,
+    error_code: i32,
+    stage: &'static str,
+) -> Result<String, PreviewFailure> {
+    let absolute = crate::settings::windows_absolute(std::path::Path::new(absolute))
+        .ok_or(PreviewFailure::new(error_code, stage))?;
     let mut cursor = std::path::PathBuf::from(&absolute);
     let mut missing = Vec::new();
     while !cursor.exists() {
-        let name = cursor.file_name()?.to_os_string();
+        let name = cursor
+            .file_name()
+            .ok_or(PreviewFailure::new(error_code, stage))?
+            .to_os_string();
         if !cursor.pop() || cursor.as_os_str().is_empty() {
-            return Some(absolute);
+            return Ok(absolute);
         }
         missing.push(name);
     }
-    let mut resolved = final_path_of(&cursor)?;
+    let mut resolved = final_path_of(&cursor).ok_or(PreviewFailure::new(error_code, stage))?;
     for name in missing.iter().rev() {
         if !resolved.ends_with('\\') {
             resolved.push('\\');
@@ -351,6 +394,7 @@ fn resolve_reparse(absolute: &str) -> Option<String> {
         resolved.push_str(&name.to_string_lossy());
     }
     crate::settings::windows_absolute(std::path::Path::new(&resolved))
+        .ok_or(PreviewFailure::new(error_code, stage))
 }
 
 fn final_path_of(path: &std::path::Path) -> Option<String> {
@@ -388,29 +432,26 @@ fn final_path_of(path: &std::path::Path) -> Option<String> {
     crate::settings::windows_absolute(std::path::Path::new(&text))
 }
 
-pub fn run() {
+pub fn run() -> Result<(), PreviewFailure> {
     let launch = crate::settings::parse_launch(std::env::args().skip(1));
     let preview = match launch.preview_dir.as_ref() {
-        Some(dir) => match guarded_preview_dir(dir) {
-            Some(safe) => Some(safe),
-            None => return,
-        },
-        None if launch.preview_missing => return,
+        Some(dir) => Some(guarded_preview_dir(dir)?),
+        None if launch.preview_missing => {
+            return Err(PreviewFailure::new(20, "read preview output argument"));
+        }
         None => None,
     };
     ISOLATED.store(launch.isolated, Ordering::SeqCst);
     if let Some(dir) = preview {
-        if std::fs::create_dir_all(&dir).is_err() {
-            return;
-        }
-        let Some(dir) = guarded_preview_dir(&dir) else {
-            return;
-        };
-        if let Ok(mut slot) = PROFILE_OVERRIDE.lock() {
-            *slot = Some(dir.clone());
-        }
-        unsafe { render_previews(&dir) };
-        return;
+        std::fs::create_dir_all(&dir)
+            .map_err(|_| PreviewFailure::new(25, "create preview output directory"))?;
+        let dir = guarded_preview_dir(&dir)?;
+        *PROFILE_OVERRIDE
+            .lock()
+            .map_err(|_| PreviewFailure::new(26, "configure isolated preview profile"))? =
+            Some(dir.clone());
+        unsafe { render_previews(&dir)? };
+        return Ok(());
     }
     let guard = crate::settings::startup_guard(launch.isolated);
     if guard.copy_home {
@@ -434,7 +475,7 @@ pub fn run() {
             lpszClassName: class_name.as_ptr(),
         };
         if RegisterClassW(&class) == 0 {
-            return;
+            return Ok(());
         }
         let mutex_name = wide(guard.mutex);
         let mutex = CreateMutexW(std::ptr::null(), FALSE, mutex_name.as_ptr());
@@ -443,7 +484,7 @@ pub fn run() {
             if !existing.is_null() {
                 let _ = PostMessageW(existing, SHOW_MSG, 0, 0);
             }
-            return;
+            return Ok(());
         }
         let _ = mutex;
 
@@ -469,7 +510,7 @@ pub fn run() {
             std::ptr::null(),
         );
         if hwnd.is_null() {
-            return;
+            return Ok(());
         }
         HWND_SLOT.store(hwnd as usize, Ordering::SeqCst);
         let pref = DWMWCP_ROUND;
@@ -509,6 +550,7 @@ pub fn run() {
         }
         remove_tray(hwnd);
     }
+    Ok(())
 }
 
 struct ResetWatch {
@@ -4773,9 +4815,10 @@ struct ShotNote {
     ok: bool,
     width: i32,
     height: i32,
+    failure: Option<PreviewFailure>,
 }
 
-unsafe fn render_previews(dir: &std::path::Path) {
+unsafe fn render_previews(dir: &std::path::Path) -> Result<(), PreviewFailure> {
     let _ = set_process_dpi();
     let started = Instant::now();
     let screen = screen_dpi();
@@ -4957,7 +5000,7 @@ unsafe fn render_previews(dir: &std::path::Path) {
         false,
     ));
     TRUST_SEEN.store(true, Ordering::Relaxed);
-    write_preview_history(now);
+    write_preview_history(now)?;
     shots.push(preview_scene(
         dir,
         "dark-hint.bmp",
@@ -4985,9 +5028,27 @@ unsafe fn render_previews(dir: &std::path::Path) {
         true,
         true,
     ));
-    save_tray_icon(dir, "tray-16.bmp", 16, 58);
-    save_tray_icon(dir, "tray-32.bmp", 32, 58);
-    save_tray_icon(dir, "tray-16-x4.bmp", 16, 58);
+    for (name, size) in [
+        ("tray-16.bmp", 16),
+        ("tray-32.bmp", 32),
+        ("tray-16-x4.bmp", 16),
+    ] {
+        let failure = save_tray_icon(dir, name, size, 58)
+            .err()
+            .map(|error| error.in_scene(name));
+        let side = (if name.ends_with("x4.bmp") {
+            size * 4
+        } else {
+            size
+        }) as i32;
+        shots.push(ShotNote {
+            name,
+            ok: failure.is_none(),
+            width: side,
+            height: side,
+            failure,
+        });
+    }
     let (working, peak) = working_set();
     let mut body = format!(
         "mode=preview\nscreen_dpi={screen}\nworking_set={working}\npeak_working_set={peak}\nelapsed_ms={}\ncopy_home=false\nregistry=false\n",
@@ -4999,7 +5060,11 @@ unsafe fn render_previews(dir: &std::path::Path) {
             shot.name, shot.ok as u8, shot.width, shot.height
         ));
     }
-    let _ = std::fs::write(dir.join("measure.txt"), body);
+    write_preview_measure(&dir.join("measure.txt"), &body)?;
+    if let Some(failure) = shots.iter().find_map(|shot| shot.failure) {
+        return Err(failure);
+    }
+    Ok(())
 }
 
 fn mock_week(now: i64) -> Snapshot {
@@ -5046,10 +5111,11 @@ fn set_preview_source(wsl: bool) {
     }
 }
 
-fn write_preview_history(now: i64) {
-    let Some(today) = local_civil(now) else {
-        return;
-    };
+fn write_preview_history(now: i64) -> Result<(), PreviewFailure> {
+    let today = local_civil(now).ok_or(PreviewFailure::new(
+        38,
+        "resolve isolated preview history date",
+    ))?;
     let today_key = format!("{:04}-{:02}-{:02}", today.year, today.month, today.day);
     let mut days = String::new();
     if let Some(day) = local_civil(now - 86_400) {
@@ -5061,21 +5127,26 @@ fn write_preview_history(now: i64) {
         days.push_str(&format!("session {key} 90 80 78\n"));
     }
     days.push_str(&format!("session {today_key} 70 58 58\n"));
-    if let Some(path) = data_file("days.txt") {
-        let _ = std::fs::write(path, days);
-    }
-    if let Some(path) = data_file("day.txt") {
-        let _ = std::fs::write(path, format!("day={today_key}\npane=session\nopen=70\n"));
-    }
-    if let Some(path) = data_file("cycle.txt") {
-        let _ = std::fs::write(path, "session 0 80 58 58\n");
-    }
-    if let Some(path) = data_file("pace.txt") {
-        let _ = std::fs::write(
-            path,
+    for (name, body) in [
+        ("days.txt", days),
+        (
+            "day.txt",
+            format!("day={today_key}\npane=session\nopen=70\n"),
+        ),
+        ("cycle.txt", "session 0 80 58 58\n".to_string()),
+        (
+            "pace.txt",
             format!("session {} 70\nsession {} 58\n", now - 3600, now - 120),
-        );
+        ),
+    ] {
+        let path = data_file(name).ok_or(PreviewFailure::new(
+            38,
+            "resolve isolated preview history path",
+        ))?;
+        std::fs::write(path, body)
+            .map_err(|_| PreviewFailure::new(39, "write isolated preview history"))?;
     }
+    Ok(())
 }
 
 unsafe fn preview_scene(
@@ -5099,21 +5170,38 @@ unsafe fn preview_scene(
         }
     }
     let card = card_for(view, dpi, i32::MAX);
-    let ok = paint_to_file(&dir.join(name), &card, dpi);
+    let failure = paint_to_file(&dir.join(name), &card, dpi)
+        .err()
+        .map(|error| error.in_scene(name));
     ShotNote {
         name,
-        ok,
+        ok: failure.is_none(),
         width: card.width,
         height: card.height,
+        failure,
     }
 }
 
-unsafe fn paint_to_file(path: &std::path::Path, card: &Card, dpi: i32) -> bool {
+unsafe fn paint_to_file(
+    path: &std::path::Path,
+    card: &Card,
+    dpi: i32,
+) -> Result<(), PreviewFailure> {
     if card.width <= 0 || card.height <= 0 {
-        return false;
+        return Err(PreviewFailure::new(
+            30,
+            "validate preview bitmap dimensions",
+        ));
     }
     let screen = GetDC(std::ptr::null_mut());
+    if screen.is_null() {
+        return Err(PreviewFailure::new(31, "acquire preview screen DC"));
+    }
     let mem = CreateCompatibleDC(screen);
+    if mem.is_null() {
+        ReleaseDC(std::ptr::null_mut(), screen);
+        return Err(PreviewFailure::new(32, "create preview memory DC"));
+    }
     let info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -5135,17 +5223,13 @@ unsafe fn paint_to_file(path: &std::path::Path, card: &Card, dpi: i32) -> bool {
         std::ptr::null_mut(),
         0,
     );
-    if bitmap.is_null() || bits.is_null() || mem.is_null() {
+    if bitmap.is_null() || bits.is_null() {
         if !bitmap.is_null() {
             DeleteObject(bitmap as HGDIOBJ);
         }
-        if !mem.is_null() {
-            DeleteDC(mem);
-        }
-        if !screen.is_null() {
-            ReleaseDC(std::ptr::null_mut(), screen);
-        }
-        return false;
+        DeleteDC(mem);
+        ReleaseDC(std::ptr::null_mut(), screen);
+        return Err(PreviewFailure::new(33, "create preview DIB section"));
     }
     let count = (card.width as usize) * (card.height as usize) * 4;
     {
@@ -5158,18 +5242,27 @@ unsafe fn paint_to_file(path: &std::path::Path, card: &Card, dpi: i32) -> bool {
         }
     }
     let old = SelectObject(mem, bitmap as HGDIOBJ);
+    if old.is_null() || old as isize == -1 {
+        DeleteObject(bitmap as HGDIOBJ);
+        DeleteDC(mem);
+        ReleaseDC(std::ptr::null_mut(), screen);
+        return Err(PreviewFailure::new(34, "select preview DIB section"));
+    }
     paint_prepared(mem, card, dpi);
     let copy = std::slice::from_raw_parts(bits as *const u8, count).to_vec();
     SelectObject(mem, old);
     DeleteObject(bitmap as HGDIOBJ);
     DeleteDC(mem);
-    if !screen.is_null() {
-        ReleaseDC(std::ptr::null_mut(), screen);
-    }
+    ReleaseDC(std::ptr::null_mut(), screen);
     write_topdown_bgra_bmp(path, card.width, card.height, &copy)
 }
 
-fn save_tray_icon(dir: &std::path::Path, name: &str, size: u32, remaining: u32) {
+fn save_tray_icon(
+    dir: &std::path::Path,
+    name: &'static str,
+    size: u32,
+    remaining: u32,
+) -> Result<(), PreviewFailure> {
     let pixels = crate::icon::remaining_icon(size, remaining, [45, 212, 191], true);
     let scaled = if name.ends_with("x4.bmp") {
         scale_rgba(&pixels, size, 4)
@@ -5181,7 +5274,7 @@ fn save_tray_icon(dir: &std::path::Path, name: &str, size: u32, remaining: u32) 
     } else {
         size
     };
-    let _ = write_topdown_bgra_bmp(&dir.join(name), side as i32, side as i32, &scaled);
+    write_topdown_bgra_bmp(&dir.join(name), side as i32, side as i32, &scaled)
 }
 
 fn rgba_to_bgra(pixels: &[u8]) -> Vec<u8> {
@@ -5217,15 +5310,23 @@ fn scale_rgba(pixels: &[u8], size: u32, factor: u32) -> Vec<u8> {
     out
 }
 
-fn write_topdown_bgra_bmp(path: &std::path::Path, width: i32, height: i32, pixels: &[u8]) -> bool {
+fn write_topdown_bgra_bmp(
+    path: &std::path::Path,
+    width: i32,
+    height: i32,
+    pixels: &[u8],
+) -> Result<(), PreviewFailure> {
     if width <= 0 || height <= 0 {
-        return false;
+        return Err(PreviewFailure::new(
+            30,
+            "validate preview bitmap dimensions",
+        ));
     }
     let width_px = width as usize;
     let height_px = height as usize;
     let row = width_px * 4;
     if pixels.len() < row * height_px {
-        return false;
+        return Err(PreviewFailure::new(30, "validate preview bitmap buffer"));
     }
     let image = (row * height_px) as u32;
     let mut file = Vec::with_capacity(54 + image as usize);
@@ -5248,7 +5349,63 @@ fn write_topdown_bgra_bmp(path: &std::path::Path, width: i32, height: i32, pixel
         let start = y * row;
         file.extend_from_slice(&pixels[start..start + row]);
     }
-    std::fs::write(path, file).is_ok()
+    std::fs::write(path, file).map_err(|_| PreviewFailure::new(36, "write preview bitmap"))
+}
+
+fn write_preview_measure(path: &std::path::Path, body: &str) -> Result<(), PreviewFailure> {
+    std::fs::write(path, body).map_err(|_| PreviewFailure::new(37, "write preview measure.txt"))
+}
+
+#[cfg(test)]
+mod preview_failure_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "jusage-preview-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn installed_profile_preview_path_is_refused_without_creation() {
+        let path = unique_temp("installed-profile").join("Jusage");
+        assert!(!path.exists());
+        let error = guarded_preview_dir(&path).unwrap_err();
+        assert_eq!(error.code, 22);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn bitmap_write_failure_has_a_nonzero_stage_code() {
+        let root = unique_temp("bitmap-write");
+        std::fs::create_dir_all(&root).unwrap();
+        let blocker = root.join("file-blocker");
+        std::fs::write(&blocker, "fixture").unwrap();
+        let error = write_topdown_bgra_bmp(&blocker.join("unwritable.bmp"), 1, 1, &[0, 0, 0, 255])
+            .unwrap_err();
+        assert_eq!(error.code, 36);
+        assert!(blocker.is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn measure_write_failure_has_a_nonzero_stage_code() {
+        let root = unique_temp("measure-write");
+        std::fs::create_dir_all(&root).unwrap();
+        let measure = root.join("measure.txt");
+        std::fs::create_dir(&measure).unwrap();
+        let error = write_preview_measure(&measure, "mode=preview\n").unwrap_err();
+        assert_eq!(error.code, 37);
+        assert!(measure.is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 unsafe fn working_set() -> (usize, usize) {

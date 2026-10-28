@@ -6,6 +6,12 @@ on:
       - jusage-v0.3
     paths:
       - ".github/workflows/windows-qa.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "src/**"
+      - "qa/windows/**"
+      - "assets/**"
   workflow_dispatch:
 
 permissions:
@@ -39,6 +45,13 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          if ($env:JUSAGE_REPRODUCIBLE -ne 'true') {
-            throw 'Independent Release builds did not produce identical SHA-256 values; keep this RC on HOLD.'
+          $qaResults = Join-Path $env:RUNNER_TEMP 'jusage-rc-evidence\qa-results.txt'
+          $statusLine = if (Test-Path -LiteralPath $qaResults) {
+            Get-Content -LiteralPath $qaResults | Where-Object { $_ -like 'binary_reproducibility=*' } | Select-Object -First 1
+          }
+          $status = if ($statusLine) { $statusLine.Substring('binary_reproducibility='.Length) } else { 'NOT_EVALUATED' }
+          switch ($status) {
+            'FAIL' { throw 'Independent Release binary hashes differ; keep this RC on HOLD.' }
+            'PASS' { Write-Output 'Binary reproducibility: PASS.' }
+            default { Write-Output "Binary reproducibility: $status; no mismatch was evaluated." }
           }

@@ -2,6 +2,29 @@
 
 현재 판정: **HOLD**. Draft PR #1만 유지하며 `main` 병합, 공개 Release, 운영 설치 교체는 금지한다.
 
+## CI Preview 침묵 실패 수정 후보
+
+2026-10-28 기준, 이 수정 후보는 기준 커밋 `c5da0927428672636ff7c997397f6a80d2abbb63` 위에서 준비했다. 아래의 미실행 항목은 승인된 2차 CI 재시도 직전 상태를 기록한다.
+
+- [실패 Run 40698329087](https://github.com/ju0o/tray-left/actions/runs/40698329087)은 Unit Test 44/44와 A/B Windows Release 빌드가 통과했지만 PE 비교상 재현성은 FAIL이었다. Preview 프로세스 종료 코드는 0이었지만 `measure.txt`가 없어 실패했고, 설치 fixture·롤백 fixture·ZIP 패키징은 `NOT_RUN`이었다.
+- 해당 Run의 내부 실패 단계를 재구성할 로그가 없다. 이전 코드는 설치 프로필 경로 검사와 디렉터리 생성 실패 때 조용히 반환했고, BMP·`measure.txt` 및 합성 이력 쓰기 오류를 무시했다. 따라서 그 Run이 경로 거부, 디렉터리 생성, GDI/BMP 렌더 또는 파일 쓰기 중 어디서 멈췄는지는 **확정 불가**다.
+- 수정 후보는 Preview 경로 검사, reparse 해석, 격리 프로필 설정, 디렉터리 생성, GDI 단계, BMP, 합성 이력, `measure.txt` 쓰기마다 비정상 종료 코드와 단계를 돌려준다. 설치 프로필 경로 차단은 유지하며, 거부 검사는 디렉터리 생성 전에 수행한다.
+- `run-rc.ps1`은 Release A SHA를 A 빌드 직후, B SHA와 비교 결과를 B 빌드 직후 `build-evidence.txt`에 저장한다. 따라서 이후 Preview가 실패해도 소스 커밋, 러너·컴파일러 환경, 옵션, 앞선 빌드 해시가 artifact에 남는다. 전체 바이너리 해시 둘 다 없으면 재현성은 `NOT_EVALUATED`; 실제 해시가 다르면 `FAIL`을 유지한다.
+- Preview 실패 뒤 시작하지 않은 설치·롤백·패키지 검증은 `NOT_RUN`으로 유지한다. 워크플로의 `push.paths`는 워크플로 파일, Cargo/build 설정, 소스, Windows QA, 자산 변경을 포함하도록 로컬에서 수정했다.
+
+| 로컬 검증 | 결과 |
+| --- | --- |
+| `cargo test --locked` | 44 passed, 0 failed (Linux 실행) |
+| `cargo fmt --all -- --check` | PASS |
+| `cargo clippy --all-targets --locked` | PASS; 기존 경고 출력 있음 |
+| Windows MSVC target `cargo check` | PASS (컴파일 검사만) |
+| Windows 전용 테스트 cross-target compile check | PASS (실행 아님) |
+| YAML parse, `git diff --check` | PASS |
+| Windows Release link 및 Preview E2E | 미실행: 이 작업 환경에 MSVC linker와 Windows runtime이 없음 |
+| PowerShell parser | 미실행: `pwsh` 미설치 |
+
+실제 Windows Release 빌드, 정상·거부·쓰기 실패 Preview E2E, artifact 보존 여부는 승인된 Windows Actions 재시도에서 확인한다. 사용자 PC와 운영 Jusage는 이번 수정·검증에서 실행하거나 변경하지 않았다.
+
 ## 기준 소스와 검토
 
 - Windows 검증 소스 커밋: `4191bf4c0c5a37b0b2175815d4472a223cc3f5b0`.
@@ -44,12 +67,12 @@
 
 ## Windows QA 및 설치 시나리오
 
-- [`.github/workflows/windows-qa.yml`](../.github/workflows/windows-qa.yml)은 `push`를 `jusage-v0.3` 브랜치와 `.github/workflows/windows-qa.yml` 경로로 제한하고 `workflow_dispatch`를 유지한다. GitHub Actions 저장소 설정은 활성화 상태(`enabled=true`)이며 `allowed_actions=all`, SHA pinning-required는 꺼져 있다. 실제 사용하는 checkout/upload actions는 SHA로 고정되어 있다.
+- [`.github/workflows/windows-qa.yml`](../.github/workflows/windows-qa.yml)의 재시도 후보는 `push`를 `jusage-v0.3` 브랜치와 워크플로·Cargo/build 설정·`src/**`·`qa/windows/**`·`assets/**` 경로로 제한하고 `workflow_dispatch`를 유지한다. GitHub Actions 저장소 설정은 확인된 시점에 활성(`enabled=true`)이었으며, `allowed_actions=all`, SHA pinning-required는 꺼져 있었다. 실제 사용하는 checkout/upload actions는 SHA로 고정되어 있다.
 - Workflow `GITHUB_TOKEN`은 `permissions: contents: read`로 제한되어 있고, workflow/QA 스크립트는 GitHub Secret이나 실제 Codex 인증 변수를 참조하지 않는다. 로컬 `gh` 인증 토큰은 `repo`/`workflow` 권한이 있으나 설정 조회에만 사용했고 실행·수정에는 쓰지 않았다.
 - Artifact 대상은 `qa-results.txt`, PE/설치 결과, 패키지와 라이선스 고지다. `--preview`는 합성 데이터를 쓰고 설치 fixture는 임시 경로·빈 `CODEX_HOME`·러너의 테스트용 레지스트리 값만 사용한다. 사용자 설정·기록·토큰 파일을 artifact에 포함하는 경로는 확인되지 않았다.
 - Workflow는 고정 Rust 도구체인, Windows Release A/B 빌드, 단위 테스트, PE 비교, 합성 `--preview`, 공개 V0.2.0 바이너리 해시 확인, 임시 프로필 기반 업그레이드·설정/기록 보존·시작 레지스트리·중복 프로세스·롤백, 라이선스 포함 패키징을 준비한다. 자동 배포·Release·운영 PC 변경 단계는 없다.
-- `qa-results.txt`는 Unit Test, Windows Release Build, Synthetic Preview, Installation Fixture, Rollback Fixture, Package ZIP, Binary Reproducibility를 개별 상태로 기록한다. 재현성이 FAIL이어도 다른 단계가 실행되면 상태·해시·패키지를 artifact에 올린 뒤 마지막 workflow gate는 실패하도록 유지한다.
-- `workflow_dispatch`에는 기본 브랜치에 workflow가 있어야 한다는 제약이 있지만, push trigger는 해당 workflow 파일 변경이 대상 branch에 push될 때 동작한다. [수동 워크플로 실행 요건](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+- `qa-results.txt`는 Unit Test, Windows Release Build, Synthetic Preview, Installation Fixture, Rollback Fixture, Package ZIP, Binary Reproducibility를 개별 상태로 기록한다. 미실행 설치·롤백 QA는 `NOT_RUN`; 두 해시를 확보하지 못한 재현성은 `NOT_EVALUATED`다. 실제 해시 불일치 시 `FAIL`과 HOLD를 유지한다. 빌드 근거는 Preview 전에 `build-evidence.txt`에 저장한다.
+- `workflow_dispatch`에는 기본 브랜치에 workflow가 있어야 한다는 제약이 있지만, push trigger는 지정 브랜치에서 설정된 경로가 바뀔 때 동작한다. [수동 워크플로 실행 요건](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 - 설치 fixture는 GitHub runner에서만 실행한다. 기존 사용자 설치·HKCU 시작 레지스트리를 사용하거나 변경하는 로컬 실행은 하지 않는다.
 
 ## 미검증 범위와 판정
