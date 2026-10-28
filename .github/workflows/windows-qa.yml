@@ -1,6 +1,11 @@
 name: Windows RC QA
 
 on:
+  push:
+    branches:
+      - jusage-v0.3
+    paths:
+      - ".github/workflows/windows-qa.yml"
   workflow_dispatch:
 
 permissions:

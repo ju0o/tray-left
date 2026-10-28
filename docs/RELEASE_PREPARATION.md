@@ -44,16 +44,18 @@
 
 ## Windows QA 및 설치 시나리오
 
-- [`.github/workflows/windows-qa.yml`](../.github/workflows/windows-qa.yml)은 공개 `windows-latest` GitHub-hosted VM에서 실행되도록 준비한 수동 `workflow_dispatch` 워크플로다. Runner는 별도 VM으로 제공되므로 운영 PC에 설치하지 않고 격리 파일·레지스트리 fixture를 실행할 수 있다.
-- 워크플로는 고정 Rust 도구체인, Windows Release A/B 빌드, 단위 테스트, PE 비교, 합성 `--preview`, V0.2.0 공개 바이너리 해시 확인, 임시 프로필 기반 업그레이드·설정/기록 보존·시작 레지스트리·중복 프로세스·롤백 시나리오, 라이선스 포함 패키징을 준비했다. 실제 V0.2.0 운영 설치나 Codex 인증은 사용하지 않는다.
-- GitHub 문서상 수동 워크플로는 파일이 기본 브랜치에 있어야 트리거된다. 병합 금지 상태라 이번 Draft 브랜치에서는 실행할 수 없고, 워크플로도 실행하지 않았다. [수동 워크플로 실행 요건](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
-- 격리 설치 fixture는 GitHub runner에서만 실행하도록 준비했다. 사용자 PC의 HKCU 시작 레지스트리를 건드리거나 기존 설치를 읽지 않기 위해 이 호스트에서는 실행하지 않았다.
-- GitHub-hosted `windows-latest` VM, 빌드·테스트·패키지 절차의 설계 범위는 구분되어 있다. Actions 결과가 없으므로 fixture 업그레이드·롤백·패키지 생성은 **BLOCKED / NOT_RUN**이다.
+- [`.github/workflows/windows-qa.yml`](../.github/workflows/windows-qa.yml)은 `push`를 `jusage-v0.3` 브랜치와 `.github/workflows/windows-qa.yml` 경로로 제한하고 `workflow_dispatch`를 유지한다. GitHub Actions 저장소 설정은 활성화 상태(`enabled=true`)이며 `allowed_actions=all`, SHA pinning-required는 꺼져 있다. 실제 사용하는 checkout/upload actions는 SHA로 고정되어 있다.
+- Workflow `GITHUB_TOKEN`은 `permissions: contents: read`로 제한되어 있고, workflow/QA 스크립트는 GitHub Secret이나 실제 Codex 인증 변수를 참조하지 않는다. 로컬 `gh` 인증 토큰은 `repo`/`workflow` 권한이 있으나 설정 조회에만 사용했고 실행·수정에는 쓰지 않았다.
+- Artifact 대상은 `qa-results.txt`, PE/설치 결과, 패키지와 라이선스 고지다. `--preview`는 합성 데이터를 쓰고 설치 fixture는 임시 경로·빈 `CODEX_HOME`·러너의 테스트용 레지스트리 값만 사용한다. 사용자 설정·기록·토큰 파일을 artifact에 포함하는 경로는 확인되지 않았다.
+- Workflow는 고정 Rust 도구체인, Windows Release A/B 빌드, 단위 테스트, PE 비교, 합성 `--preview`, 공개 V0.2.0 바이너리 해시 확인, 임시 프로필 기반 업그레이드·설정/기록 보존·시작 레지스트리·중복 프로세스·롤백, 라이선스 포함 패키징을 준비한다. 자동 배포·Release·운영 PC 변경 단계는 없다.
+- `qa-results.txt`는 Unit Test, Windows Release Build, Synthetic Preview, Installation Fixture, Rollback Fixture, Package ZIP, Binary Reproducibility를 개별 상태로 기록한다. 재현성이 FAIL이어도 다른 단계가 실행되면 상태·해시·패키지를 artifact에 올린 뒤 마지막 workflow gate는 실패하도록 유지한다.
+- `workflow_dispatch`에는 기본 브랜치에 workflow가 있어야 한다는 제약이 있지만, push trigger는 해당 workflow 파일 변경이 대상 branch에 push될 때 동작한다. [수동 워크플로 실행 요건](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+- 설치 fixture는 GitHub runner에서만 실행한다. 기존 사용자 설치·HKCU 시작 레지스트리를 사용하거나 변경하는 로컬 실행은 하지 않는다.
 
 ## 미검증 범위와 판정
 
 - 배포 후보 파일과 테스트 대상 파일의 동일성은 A 단독 실행에 대해서만 확인했다. A/B 재현성이 실패했으므로 배포용 단일 RC는 **NOT_ESTABLISHED**.
-- GitHub Actions, 합성 설치 업그레이드·롤백, 최종 ZIP 패키지는 미실행.
+- 각 Windows Actions 실행의 `qa-results.txt`, `build-manifest.txt`, package ZIP을 해당 run artifact에서 확인하고 이전 로컬 검증 결과와 구분한다.
 - 실제 트레이 GUI 상호작용, 125%·150% Windows DPI, 듀얼 모니터, 실제 Codex 계정은 미검증. 이번 작업은 창이나 콘솔을 열지 않았다.
 - 기존 V0.2.0 운영본·기록·설정·시작 항목은 변경하지 않았다.
 

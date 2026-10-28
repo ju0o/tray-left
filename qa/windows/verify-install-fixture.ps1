@@ -137,6 +137,7 @@ try {
             throw "The $($pathAndHash.Label) fixture changed during upgrade."
         }
     }
+    Write-Output 'INSTALLATION_FIXTURE=PASS'
 
     Stop-KnownJusageProcesses -ExpectedPaths @($installExe)
     Copy-Item -LiteralPath $baselineExe -Destination $installExe -Force
@@ -149,6 +150,7 @@ try {
         (Get-FileHash $cyclesPath -Algorithm SHA256).Hash -ne $cyclesBefore) {
         throw 'The settings or history fixture changed during rollback.'
     }
+    Write-Output 'ROLLBACK_FIXTURE=PASS'
 
     $lock = [IO.File]::Open($installExe, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
@@ -161,6 +163,7 @@ try {
         }
     }
     finally { $lock.Dispose() }
+    Write-Output 'LOCKED_FILE_GUARD=PASS'
 
     Write-Output "INSTALL_FIXTURE=PASS"
     Write-Output "BASELINE_SHA256=$baselineSha"
