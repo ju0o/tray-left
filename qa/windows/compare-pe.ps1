@@ -126,7 +126,8 @@ function Read-Pe([string]$Path, [string]$Label) {
             $leaf = ($value -split '[\\/]')[-1]
             if ($leaf) {
                 $pathBytes = [Text.Encoding]::UTF8.GetBytes($value)
-                $pathMarkers += "encoding=$($encoding.Name) leaf=$leaf length=$($value.Length) sha256=$([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($pathBytes)).ToLowerInvariant())"
+                $pathHash = Hash-Range $pathBytes 0 $pathBytes.Length
+                $pathMarkers += "encoding=$($encoding.Name) leaf=$leaf length=$($value.Length) sha256=$pathHash"
             }
         }
     }
