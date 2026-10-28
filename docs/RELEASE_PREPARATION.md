@@ -2,6 +2,27 @@
 
 현재 판정: **HOLD**. Draft PR #1만 유지하며 `main` 병합, 공개 Release, 운영 설치 교체는 금지한다.
 
+## 최신 CI 기준과 이번 수정 계약
+
+기준 커밋 `a21387767d01b29f98fe87b2e803bd24593dba73`의 [Run 40713632616](https://github.com/ju0o/tray-left/actions/runs/40713632616)은 Preview까지 통과했지만 롤백 파일 교체와 A/B 재현성 때문에 실패했다.
+
+| 검사 | Run 40713632616 |
+| --- | --- |
+| Windows Unit Test | PASS, 47/47 |
+| Release Build A/B | PASS |
+| Preview 거부 코드 | PASS: 22, 36, 37; 차단 경로·파일 유지 |
+| 정상 Preview | PASS: 화면 BMP 19개, 트레이 BMP 3개, `measure.txt` |
+| 격리 Installation Fixture | PASS. 실행 중인 공개 V0.2.0 프로세스 교체 검증은 아님 |
+| Rollback Fixture | FAIL: `verify-install-fixture.ps1:143`에서 V0.2.0 파일 `Copy-Item`이 사용 중 오류 |
+| Locked-file Guard / QA ZIP | NOT_RUN |
+| Binary Reproducibility | FAIL |
+
+이전 fixture는 `Stop-Process` 요청 뒤 `Wait-Process` 결과를 무시하고, 설치된 QA PID의 종료와 파일 잠금 해제를 확인하지 않은 채 복사했다. Run 로그에는 정확한 잠금 소유 PID가 보존되지 않아 잠금 주체는 사후 확정할 수 없다. 이번 fixture 수정은 PID와 정규화 경로를 기록하고, 해당 PID만 종료 요청한 뒤 종료 여부를 다시 조회한다. 별도 읽기 전용 파일 잠금 probe를 제한 시간 동안 재시도하고, 남은 PID와 마지막 I/O 오류를 진단에 보존한다. 종료 및 잠금 확인에 실패하면 롤백 복사를 시도하지 않는다.
+
+이번 후보는 임시 프로필에서 공개 V0.2.0 바이너리를 시작 상태로 실행하지 않고 V0.3 self-copy를 확인한다. 이는 실제 실행 중인 V0.2.0을 교체한 검증이 아니다. 일반 사용자의 업그레이드 절차는 [README의 수동 업데이트 안내](../README.md)에서 정의한다. 패키지 검증은 Preview에서 실행한 바이너리, 패키지에 복사한 바이너리, ZIP에서 풀어낸 바이너리의 SHA-256 일치를 확인하고 ZIP 안의 LICENSE 및 타사 라이선스 파일도 검사한다.
+
+이번 수정 대상은 `qa/windows/verify-install-fixture.ps1`, `qa/windows/run-rc.ps1`, README의 수동 업데이트 절차와 이 QA 기록이다. 변경 후 승인된 Windows Actions 실행은 1회만 수행하고, 실패해도 자동 재실행하지 않는다. A/B 불일치는 다른 QA 결과와 분리해 FAIL로 유지한다.
+
 ## CI Preview 침묵 실패 수정 후보
 
 2026-10-28 기준, 이 수정 후보는 기준 커밋 `c5da0927428672636ff7c997397f6a80d2abbb63` 위에서 준비했다. 아래의 미실행 항목은 승인된 2차 CI 재시도 직전 상태를 기록한다.

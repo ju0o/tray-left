@@ -7,6 +7,7 @@ $workspace = $env:GITHUB_WORKSPACE
 $evidence = Join-Path $env:RUNNER_TEMP 'jusage-rc-evidence'
 $buildRoot = Join-Path $env:RUNNER_TEMP 'jusage-rc-builds'
 $packageRoot = Join-Path $env:RUNNER_TEMP 'jusage-rc-package'
+$packageVerifyRoot = Join-Path $env:RUNNER_TEMP 'jusage-rc-package-verify'
 $packageZip = Join-Path $evidence 'jusage-v0.3.0-rc.zip'
 New-Item -ItemType Directory -Path $evidence, $buildRoot -Force | Out-Null
 $qaResultPath = Join-Path $evidence 'qa-results.txt'
@@ -16,6 +17,7 @@ $qaResults = [ordered]@{
     synthetic_preview = 'NOT_RUN'
     installation_fixture = 'NOT_RUN'
     rollback_fixture = 'NOT_RUN'
+    locked_file_guard = 'NOT_RUN'
     package_zip = 'NOT_RUN'
     binary_reproducibility = 'NOT_EVALUATED'
 }
@@ -266,8 +268,9 @@ try {
     $installLines = Get-Content -LiteralPath (Join-Path $evidence 'install-fixture.txt')
     if ($installLines -contains 'INSTALLATION_FIXTURE=PASS') { $qaResults.installation_fixture = 'PASS' }
     if ($installLines -contains 'ROLLBACK_FIXTURE=PASS') { $qaResults.rollback_fixture = 'PASS' }
-    if ($qaResults.installation_fixture -ne 'PASS' -or $qaResults.rollback_fixture -ne 'PASS') {
-        throw 'The isolated installation or rollback fixture did not report PASS.'
+    if ($installLines -contains 'LOCKED_FILE_GUARD=PASS') { $qaResults.locked_file_guard = 'PASS' }
+    if ($qaResults.installation_fixture -ne 'PASS' -or $qaResults.rollback_fixture -ne 'PASS' -or $qaResults.locked_file_guard -ne 'PASS') {
+        throw 'The isolated installation, rollback, or locked-file fixture did not report PASS.'
     }
     if ((Get-FileHash -LiteralPath $exeA -Algorithm SHA256).Hash.ToLowerInvariant() -ne $testedSha) {
         throw 'The package candidate changed during installation fixture testing.'
@@ -275,7 +278,10 @@ try {
 
     if (Test-Path -LiteralPath $packageRoot) { Remove-Item -LiteralPath $packageRoot -Recurse -Force }
     New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
-    Copy-Item -LiteralPath $exeA -Destination (Join-Path $packageRoot 'jusage.exe')
+    $packageExe = Join-Path $packageRoot 'jusage.exe'
+    Copy-Item -LiteralPath $exeA -Destination $packageExe
+    $packageBinarySha = (Get-FileHash -LiteralPath $packageExe -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($packageBinarySha -ne $testedSha) { throw 'The staged package executable does not match the Preview-tested executable.' }
     Copy-Item -LiteralPath (Join-Path $workspace 'LICENSE') -Destination $packageRoot
     Copy-Item -LiteralPath (Join-Path $workspace 'THIRD_PARTY_NOTICES.md') -Destination $packageRoot
     Copy-Item -LiteralPath (Join-Path $workspace 'THIRD_PARTY_LICENSES') -Destination $packageRoot -Recurse
@@ -300,8 +306,10 @@ try {
         "synthetic_preview=$($qaResults.synthetic_preview)"
         "installation_fixture=$($qaResults.installation_fixture)"
         "rollback_fixture=$($qaResults.rollback_fixture)"
+        "locked_file_guard=$($qaResults.locked_file_guard)"
         "binary_reproducibility=$($qaResults.binary_reproducibility)"
-        'package_contents=PASS'
+        'package_payload=staged_before_archive_verification'
+        "package_binary_sha256=$packageBinarySha"
         "offscreen_cases=$($renderRows.Count)"
         "third_party_license_files=$licenseCount"
         'gui_dpi_dual_monitor=NOT_TESTED'
@@ -309,13 +317,27 @@ try {
     [IO.File]::WriteAllText((Join-Path $packageRoot 'BUILD-MANIFEST.txt'), "$manifest`n", [Text.UTF8Encoding]::new($false))
     if (Test-Path -LiteralPath $packageZip) { Remove-Item -LiteralPath $packageZip -Force }
     Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $packageZip -CompressionLevel Optimal
+    if (Test-Path -LiteralPath $packageVerifyRoot) { Remove-Item -LiteralPath $packageVerifyRoot -Recurse -Force }
+    Expand-Archive -LiteralPath $packageZip -DestinationPath $packageVerifyRoot -Force
+    $zipExe = Join-Path $packageVerifyRoot 'jusage.exe'
+    if (-not (Test-Path -LiteralPath $zipExe -PathType Leaf)) { throw 'The QA ZIP is missing jusage.exe.' }
+    $zipBinarySha = (Get-FileHash -LiteralPath $zipExe -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($zipBinarySha -ne $testedSha) { throw 'The QA ZIP executable does not match the Preview-tested executable.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $packageVerifyRoot 'LICENSE') -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $packageVerifyRoot 'THIRD_PARTY_NOTICES.md') -PathType Leaf)) {
+        throw 'The QA ZIP is missing a required license notice.'
+    }
+    $zipLicenseCount = @(Get-ChildItem -LiteralPath (Join-Path $packageVerifyRoot 'THIRD_PARTY_LICENSES') -File -Recurse).Count
+    if ($zipLicenseCount -lt 76) { throw "The QA ZIP is missing third-party licenses ($zipLicenseCount files found)." }
     $zipSha = (Get-FileHash -LiteralPath $packageZip -Algorithm SHA256).Hash.ToLowerInvariant()
     $qaResults.package_zip = 'PASS'
     [IO.File]::WriteAllText((Join-Path $evidence 'package.sha256'), "$zipSha  jusage-v0.3.0-rc.zip`n", [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $evidence 'build-manifest.txt'), "$manifest`npackage_sha256=$zipSha`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $evidence 'build-manifest.txt'), "$manifest`npackage_contents=PASS`nzip_third_party_license_files=$zipLicenseCount`npackage_zip=PASS`nzip_binary_sha256=$zipBinarySha`npackage_sha256=$zipSha`n", [Text.UTF8Encoding]::new($false))
     Write-Output "PACKAGE_SHA256=$zipSha"
     Write-Output "BINARY_SHA256=$shaA"
     Write-Output "PREVIEW_TESTED_SHA256=$testedSha"
+    Write-Output "PACKAGE_BINARY_SHA256=$packageBinarySha"
+    Write-Output "ZIP_BINARY_SHA256=$zipBinarySha"
     Write-Output "REPRODUCIBILITY=$reproText"
 }
 finally {
@@ -327,7 +349,9 @@ finally {
         $installLines = Get-Content -LiteralPath $installReport
         if ($installLines -contains 'INSTALLATION_FIXTURE=PASS') { $qaResults.installation_fixture = 'PASS' }
         if ($installLines -contains 'ROLLBACK_FIXTURE=PASS') { $qaResults.rollback_fixture = 'PASS' }
+        if ($installLines -contains 'LOCKED_FILE_GUARD=PASS') { $qaResults.locked_file_guard = 'PASS' }
     }
+    if (Test-Path -LiteralPath $packageVerifyRoot) { Remove-Item -LiteralPath $packageVerifyRoot -Recurse -Force -ErrorAction SilentlyContinue }
     Write-BuildEvidence
     Write-QAResults
     Pop-Location

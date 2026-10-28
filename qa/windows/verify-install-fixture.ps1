@@ -27,16 +27,96 @@ function Get-JusageProcesses {
 }
 
 function Stop-KnownJusageProcesses {
-    param([string[]]$ExpectedPaths)
+    param(
+        [string[]]$ExpectedPaths,
+        [int[]]$ProcessIds = @(),
+        [ValidateRange(1, 60)][int]$TimeoutSeconds = 15
+    )
     $normalized = @($ExpectedPaths | ForEach-Object { [IO.Path]::GetFullPath($_) })
     foreach ($process in (Get-JusageProcesses -ExpectedPaths $ExpectedPaths)) {
         $id = [int]$process.ProcessId
+        if ($ProcessIds.Count -gt 0 -and $id -notin $ProcessIds) { continue }
         $current = Get-CimInstance Win32_Process -Filter "ProcessId = $id" -ErrorAction SilentlyContinue
-        if ($current -and $current.ExecutablePath -and $normalized -contains [IO.Path]::GetFullPath($current.ExecutablePath)) {
-            Stop-Process -Id $id -Force
-            Wait-Process -Id $id -Timeout 10 -ErrorAction SilentlyContinue
+        if (-not $current -or -not $current.ExecutablePath) { continue }
+        $currentPath = [IO.Path]::GetFullPath($current.ExecutablePath)
+        if ($normalized -notcontains $currentPath) { continue }
+
+        $processHandle = $null
+        $stopFailure = $null
+        try {
+            $processHandle = [Diagnostics.Process]::GetProcessById($id)
+            $handlePath = [IO.Path]::GetFullPath($processHandle.MainModule.FileName)
+            if ($normalized -notcontains $handlePath) {
+                Write-Output "STOP_SKIP_PID_REUSED pid=$id path=$handlePath"
+                continue
+            }
+            Write-Output "STOP_REQUEST pid=$id path=$handlePath"
+            $processHandle.Kill()
+            if (-not $processHandle.WaitForExit($TimeoutSeconds * 1000)) {
+                $stopFailure = 'process remained after wait timeout'
+            }
         }
+        catch { $stopFailure = $_.Exception.Message }
+        finally { if ($processHandle) { $processHandle.Dispose() } }
+
+        $remainingPid = Get-CimInstance Win32_Process -Filter "ProcessId = $id" -ErrorAction SilentlyContinue
+        if ($remainingPid -and $remainingPid.ExecutablePath -and
+            $normalized -contains [IO.Path]::GetFullPath($remainingPid.ExecutablePath)) {
+            $detail = if ($stopFailure) { $stopFailure } else { 'process remained after wait timeout' }
+            $failure = "STOP_NOT_CONFIRMED pid=$id path=$currentPath detail=$detail"
+            Write-Output $failure
+            throw $failure
+        }
+        Write-Output "STOP_CONFIRMED pid=$id path=$currentPath"
     }
+
+    $remaining = @(Get-JusageProcesses -ExpectedPaths $ExpectedPaths)
+    if ($remaining.Count -gt 0) {
+        $details = @($remaining | ForEach-Object { "pid=$($_.ProcessId),path=$($_.ExecutablePath)" }) -join ';'
+        $failure = "STOP_RECHECK_REMAINS $details"
+        Write-Output $failure
+        throw $failure
+    }
+}
+
+function Wait-ForExecutableUnlocked {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateRange(1, 30)][int]$TimeoutSeconds = 10
+    )
+
+    $normalizedPath = [IO.Path]::GetFullPath($Path)
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $attempt = 0
+    $lastDetail = 'no lock probe attempted'
+    do {
+        $attempt++
+        $holders = @(Get-JusageProcesses -ExpectedPaths @($normalizedPath))
+        if ($holders.Count -eq 0) {
+            $probe = $null
+            try {
+                $probe = [IO.File]::Open($normalizedPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+                Write-Output "ROLLBACK_LOCK_PROBE=PASS attempt=$attempt path=$normalizedPath"
+                return
+            }
+            catch {
+                $lastDetail = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+            }
+            finally {
+                if ($probe) { $probe.Dispose() }
+            }
+        }
+        else {
+            $pids = @($holders | ForEach-Object { $_.ProcessId }) -join ','
+            $lastDetail = "matching_process_pids=$pids"
+        }
+        Write-Output "ROLLBACK_LOCK_RECHECK attempt=$attempt path=$normalizedPath detail=$lastDetail"
+        if ([DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 500 }
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $failure = "ROLLBACK_FILE_LOCKED path=$normalizedPath attempts=$attempt detail=$lastDetail"
+    Write-Output $failure
+    throw $failure
 }
 
 function Restore-RunValue {
@@ -137,10 +217,21 @@ try {
             throw "The $($pathAndHash.Label) fixture changed during upgrade."
         }
     }
+    Write-Output "QA_UPGRADE_PROCESS pid=$firstPid path=$([IO.Path]::GetFullPath($installExe))"
+    Write-Output 'V02_BASELINE_RUNNING=false; this fixture verifies isolated self-copy, not replacement of a live V0.2.0 process.'
     Write-Output 'INSTALLATION_FIXTURE=PASS'
 
-    Stop-KnownJusageProcesses -ExpectedPaths @($installExe)
-    Copy-Item -LiteralPath $baselineExe -Destination $installExe -Force
+    Stop-KnownJusageProcesses -ExpectedPaths @($installExe) -ProcessIds @($firstPid)
+    Wait-ForExecutableUnlocked -Path $installExe
+    try {
+        Copy-Item -LiteralPath $baselineExe -Destination $installExe -Force -ErrorAction Stop
+    }
+    catch {
+        $holders = @(Get-JusageProcesses -ExpectedPaths @($installExe))
+        $holderPids = @($holders | ForEach-Object { $_.ProcessId }) -join ','
+        Write-Output "ROLLBACK_COPY_FAILED stage=replace_v02_baseline pid=$firstPid path=$([IO.Path]::GetFullPath($installExe)) remaining_pids=$holderPids error=$($_.Exception.Message)"
+        throw
+    }
     $rollbackSha = (Get-FileHash -LiteralPath $installExe -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($rollbackSha -ne $baselineSha) {
         throw 'The stopped-app rollback did not restore the public V0.2.0 file.'
@@ -179,8 +270,14 @@ finally {
     }
     $env:LOCALAPPDATA = $oldLocalAppData
     $env:CODEX_HOME = $oldCodexHome
-    Stop-KnownJusageProcesses -ExpectedPaths @($installExe, $CandidateExe)
-    if (Test-Path -LiteralPath $testRoot) {
-        Remove-Item -LiteralPath $testRoot -Recurse -Force
+    $cleanupComplete = $true
+    try { Stop-KnownJusageProcesses -ExpectedPaths @($installExe, $CandidateExe) }
+    catch {
+        Write-Output "QA_CLEANUP_FAILED error=$($_.Exception.Message)"
+        $cleanupComplete = $false
+    }
+    if ($cleanupComplete -and (Test-Path -LiteralPath $testRoot)) {
+        try { Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop }
+        catch { Write-Output "QA_TEMP_CLEANUP_FAILED path=$testRoot error=$($_.Exception.Message)" }
     }
 }
