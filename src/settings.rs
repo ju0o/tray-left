@@ -277,6 +277,36 @@ pub struct WorkArea {
     pub bottom: i32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PopupScroll {
+    pub height: i32,
+    pub top: i32,
+    pub bottom: i32,
+    pub offset: i32,
+    pub max_offset: i32,
+}
+
+pub fn popup_scroll_layout(
+    full_height: i32,
+    max_height: i32,
+    body_top: i32,
+    body_bottom: i32,
+    offset: i32,
+) -> PopupScroll {
+    let height = full_height.max(1).min(max_height.max(1));
+    let footer = full_height.saturating_sub(body_bottom).max(0);
+    let top = body_top.clamp(0, height);
+    let bottom = height.saturating_sub(footer).max(top).min(height);
+    let max_offset = body_bottom.saturating_sub(bottom).max(0);
+    PopupScroll {
+        height,
+        top,
+        bottom,
+        offset: offset.clamp(0, max_offset),
+        max_offset,
+    }
+}
+
 pub fn clamp_popup(
     mut x: i32,
     mut y: i32,
@@ -719,5 +749,18 @@ mod tests {
         };
         let (x, y) = clamp_popup(20, 20, 400, 500, left, 8);
         assert_eq!((x, y), (20, 20));
+    }
+
+    #[test]
+    fn a_tall_popup_keeps_its_footer_visible_and_clamps_scrolling() {
+        let first = popup_scroll_layout(1056, 760, 58, 940, 0);
+        assert_eq!(first.height, 760);
+        assert_eq!((first.top, first.bottom), (58, 644));
+        assert_eq!(first.max_offset, 296);
+        assert_eq!(first.offset, 0);
+
+        let last = popup_scroll_layout(1056, 760, 58, 940, i32::MAX);
+        assert_eq!(last.offset, last.max_offset);
+        assert_eq!(940 - last.offset, last.bottom);
     }
 }

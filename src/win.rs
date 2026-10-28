@@ -17,12 +17,13 @@ use windows_sys::Win32::Graphics::Dwm::{
 use windows_sys::Win32::Graphics::Gdi::{
     AlphaBlend, BeginPaint, CreateBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontW,
     CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
-    GetDC, GetDeviceCaps, GetMonitorInfoW, GetTextExtentPoint32W, InvalidateRect, MonitorFromRect,
-    ReleaseDC, RoundRect, SelectObject, SetBkMode, SetTextCharacterExtra, SetTextColor,
-    SetWindowRgn, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
-    DIB_RGB_COLORS, DT_BOTTOM, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT,
-    DT_SINGLELINE, DT_TOP, DT_VCENTER, DT_WORDBREAK, FW_NORMAL, FW_SEMIBOLD, HFONT, HGDIOBJ,
-    LOGPIXELSX, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
+    GetDC, GetDeviceCaps, GetMonitorInfoW, GetTextExtentPoint32W, IntersectClipRect,
+    InvalidateRect, MonitorFromRect, ReleaseDC, RestoreDC, RoundRect, SaveDC, SelectObject,
+    SetBkMode, SetTextCharacterExtra, SetTextColor, SetWindowRgn, AC_SRC_ALPHA, AC_SRC_OVER,
+    BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS, DT_BOTTOM, DT_CENTER,
+    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_TOP, DT_VCENTER,
+    DT_WORDBREAK, FW_NORMAL, FW_SEMIBOLD, HFONT, HGDIOBJ, LOGPIXELSX, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileTimeToLocalFileTime, GetFinalPathNameByHandleW, GetFullPathNameW,
@@ -40,7 +41,8 @@ use windows_sys::Win32::System::Time::FileTimeToSystemTime;
 use windows_sys::Win32::UI::Controls::{MARGINS, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE,
+    ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_DOWN,
+    VK_END, VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_UP,
 };
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
@@ -54,8 +56,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, HICON, ICONINFO, IDC_ARROW, IDC_HAND, SM_CXSMICON, SPI_GETWORKAREA,
     SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WA_INACTIVE, WM_ACTIVATE, WM_CLOSE, WM_DESTROY,
     WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETICON, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW,
-    WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_POPUP,
+    WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETICON, WM_SETTINGCHANGE, WM_TIMER,
+    WNDCLASSW, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use crate::icon::remaining_icon;
@@ -160,6 +162,10 @@ struct DayCol {
 struct Card {
     width: i32,
     height: i32,
+    scroll_view: Option<Spot>,
+    scroll_offset: i32,
+    scroll_max: i32,
+    scroll_step: i32,
     close: Spot,
     gear: Spot,
     refresh: Spot,
@@ -256,6 +262,7 @@ static FRESH_AT: AtomicI64 = AtomicI64::new(0);
 static LAST_KIND: AtomicU8 = AtomicU8::new(0);
 static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
 static DETAIL_OPEN: AtomicBool = AtomicBool::new(false);
+static SCROLL_Y: AtomicI32 = AtomicI32::new(0);
 static ISOLATED: AtomicBool = AtomicBool::new(false);
 static PROFILE_OVERRIDE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 static CONFIG: Mutex<Option<crate::settings::Settings>> = Mutex::new(None);
@@ -442,7 +449,13 @@ pub fn run() {
         }
         let _ = mutex;
 
-        let card = card_for(&View::Loading, screen_dpi());
+        let dpi = screen_dpi();
+        let initial_work = work_area();
+        let card = card_for(
+            &View::Loading,
+            dpi,
+            initial_work.bottom - initial_work.top - scale(16, dpi),
+        );
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW,
             class_name.as_ptr(),
@@ -945,9 +958,9 @@ fn local_civil(unix: i64) -> Option<Civil> {
     })
 }
 
-fn card_for(view: &View, dpi: i32) -> Card {
+fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
     if SETTINGS_OPEN.load(Ordering::Relaxed) {
-        return settings_card(dpi);
+        return fit_popup(settings_card(dpi), dpi, max_height);
     }
     let s = |value: i32| scale(value, dpi);
     let mut tiles = Vec::new();
@@ -1549,9 +1562,13 @@ fn card_for(view: &View, dpi: i32) -> Card {
         h: s(32),
     };
     y += quit.h + s(12);
-    Card {
+    let card = Card {
         width,
         height: y,
+        scroll_view: None,
+        scroll_offset: 0,
+        scroll_max: 0,
+        scroll_step: s(48),
         close,
         gear,
         refresh,
@@ -1601,6 +1618,93 @@ fn card_for(view: &View, dpi: i32) -> Card {
         plan,
         hero_big,
         remaining,
+    };
+    fit_popup(card, dpi, max_height)
+}
+
+fn fit_popup(mut card: Card, dpi: i32, max_height: i32) -> Card {
+    let full_height = card.height;
+    let body_bottom = card
+        .detail_box
+        .map(|spot| spot.y)
+        .or_else(|| card.bottom_rule.map(|spot| spot.y))
+        .unwrap_or(full_height);
+    let body_top = card.close.y + card.close.h + scale(4, dpi);
+    let layout = crate::settings::popup_scroll_layout(
+        full_height,
+        max_height,
+        body_top,
+        body_bottom,
+        SCROLL_Y.load(Ordering::Relaxed),
+    );
+    SCROLL_Y.store(layout.offset, Ordering::Relaxed);
+    card.scroll_offset = layout.offset;
+    card.scroll_max = layout.max_offset;
+    card.scroll_step = scale(48, dpi).max(1);
+    if layout.height < full_height {
+        shift_body(&mut card, -layout.offset);
+        let footer_shift = layout.height - full_height;
+        shift_optional(&mut card.bottom_rule, footer_shift);
+        shift_optional(&mut card.detail_box, footer_shift);
+        card.refresh.y += footer_shift;
+        card.quit.y += footer_shift;
+        card.height = layout.height;
+        if layout.max_offset > 0 {
+            card.scroll_view = Some(Spot {
+                x: 0,
+                y: layout.top,
+                w: card.width,
+                h: layout.bottom - layout.top,
+            });
+        }
+    }
+    card
+}
+
+fn shift_optional(spot: &mut Option<Spot>, by: i32) {
+    if let Some(spot) = spot {
+        spot.y += by;
+    }
+}
+
+fn shift_body(card: &mut Card, by: i32) {
+    shift_optional(&mut card.scope_box, by);
+    shift_optional(&mut card.rail, by);
+    shift_optional(&mut card.mood_box, by);
+    shift_optional(&mut card.bar, by);
+    shift_optional(&mut card.charge_box, by);
+    shift_optional(&mut card.charge_bar, by);
+    shift_optional(&mut card.top_rule, by);
+    shift_optional(&mut card.refill_box, by);
+    shift_optional(&mut card.note_box, by);
+    shift_optional(&mut card.trust_box, by);
+    shift_optional(&mut card.ledger_rule, by);
+    shift_optional(&mut card.days_rule, by);
+    shift_optional(&mut card.days_label, by);
+    shift_optional(&mut card.days_open_label, by);
+    shift_optional(&mut card.days_close_label, by);
+    shift_optional(&mut card.story_box, by);
+    shift_optional(&mut card.pace_caption_box, by);
+    shift_optional(&mut card.pace_box, by);
+    shift_optional(&mut card.cycle_box, by);
+    shift_optional(&mut card.status_box, by);
+    card.hero_box.y += by;
+    for fact in &mut card.facts {
+        fact.label.y += by;
+        fact.value.y += by;
+        shift_optional(&mut fact.rule, by);
+    }
+    for day in &mut card.days {
+        day.name_box.y += by;
+        day.open_box.y += by;
+        day.close_box.y += by;
+        shift_optional(&mut day.tick, by);
+    }
+    for tile in &mut card.tiles {
+        tile.spot.y += by;
+    }
+    for row in &mut card.rows {
+        row.spot.y += by;
     }
 }
 
@@ -1782,6 +1886,10 @@ fn settings_card(dpi: i32) -> Card {
     Card {
         width,
         height: y,
+        scroll_view: None,
+        scroll_offset: 0,
+        scroll_max: 0,
+        scroll_step: s(48),
         close,
         gear,
         refresh: Spot {
@@ -1865,6 +1973,28 @@ unsafe fn work_area() -> RECT {
     work
 }
 
+unsafe fn work_area_for_anchor(anchor: Option<RECT>) -> RECT {
+    let Some(anchor) = anchor else {
+        return work_area();
+    };
+    let monitor = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        rcMonitor: RECT::default(),
+        rcWork: RECT::default(),
+        dwFlags: 0,
+    };
+    if !monitor.is_null() && GetMonitorInfoW(monitor, &mut info) != 0 {
+        info.rcWork
+    } else {
+        work_area()
+    }
+}
+
+unsafe fn popup_work_area(hwnd: HWND) -> RECT {
+    work_area_for_anchor(tray_anchor(hwnd))
+}
+
 unsafe fn tray_anchor(hwnd: HWND) -> Option<RECT> {
     let id = NOTIFYICONIDENTIFIER {
         cbSize: std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32,
@@ -1887,32 +2017,21 @@ unsafe fn place(hwnd: HWND) {
     let Some(view) = VIEW.lock().ok().map(|view| view.clone()) else {
         return;
     };
-    let card = card_for(&view, dpi);
+    let anchor = tray_anchor(hwnd);
     let margin = scale(8, dpi);
-    let (x, y, work) = if let Some(anchor) = tray_anchor(hwnd) {
-        let monitor = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
-        let mut info = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            rcMonitor: RECT::default(),
-            rcWork: RECT::default(),
-            dwFlags: 0,
-        };
-        let work = if !monitor.is_null() && GetMonitorInfoW(monitor, &mut info) != 0 {
-            info.rcWork
-        } else {
-            work_area()
-        };
+    let work = work_area_for_anchor(anchor);
+    let card = card_for(&view, dpi, work.bottom - work.top - margin * 2);
+    let (x, y) = if let Some(anchor) = anchor {
         let x = anchor.right - card.width;
         let mut y = anchor.top - card.height - margin + motion_offset();
         if y < work.top + margin {
             y = anchor.bottom + margin;
         }
-        (x, y, work)
+        (x, y)
     } else {
-        let work = work_area();
         let x = work.right - card.width - scale(16, dpi);
         let y = work.bottom - card.height - margin + motion_offset();
-        (x, y, work)
+        (x, y)
     };
     let (x, y) = crate::settings::clamp_popup(
         x,
@@ -2040,6 +2159,14 @@ unsafe extern "system" fn wnd_proc(
             paint(hwnd);
             0
         }
+        WM_MOUSEWHEEL => {
+            let delta = ((wparam >> 16) as u16 as i16) as i32;
+            if delta != 0 {
+                let step = scale(48, window_dpi(hwnd)).max(1);
+                scroll_panel(hwnd, if delta > 0 { -step } else { step });
+            }
+            0
+        }
         WM_MOUSEMOVE => {
             let (x, y) = mouse_xy(lparam);
             let hit = hit_at(hwnd, x, y);
@@ -2092,6 +2219,7 @@ unsafe extern "system" fn wnd_proc(
             hide_panel(hwnd);
             0
         }
+        WM_KEYDOWN if scroll_key(hwnd, wparam as u32) => 0,
         WM_ACTIVATE if (wparam as u32 & 0xffff) == WA_INACTIVE as u32 => {
             if IsWindowVisible(hwnd) != 0 {
                 hide_panel(hwnd);
@@ -2123,15 +2251,18 @@ fn activate(hwnd: HWND, hit: u8) {
         HIT_REFRESH => request_refresh(),
         HIT_DETAIL => {
             DETAIL_OPEN.store(!DETAIL_OPEN.load(Ordering::Relaxed), Ordering::Relaxed);
+            SCROLL_Y.store(0, Ordering::Relaxed);
             relayout(hwnd);
         }
         HIT_SETTINGS => {
             SETTINGS_OPEN.store(true, Ordering::Relaxed);
+            SCROLL_Y.store(0, Ordering::Relaxed);
             spawn_distro_reload();
             relayout(hwnd);
         }
         ROW_DONE => {
             SETTINGS_OPEN.store(false, Ordering::Relaxed);
+            SCROLL_Y.store(0, Ordering::Relaxed);
             relayout(hwnd);
         }
         ROW_SOURCE => {
@@ -2230,7 +2361,9 @@ fn hit_at(hwnd: HWND, x: i32, y: i32) -> u8 {
     let Ok(view) = VIEW.lock() else {
         return 0;
     };
-    let card = card_for(&view, window_dpi(hwnd));
+    let dpi = window_dpi(hwnd);
+    let work = unsafe { popup_work_area(hwnd) };
+    let card = card_for(&view, dpi, work.bottom - work.top - scale(16, dpi));
     if card.close.contains(x, y) {
         return HIT_CLOSE;
     }
@@ -2242,18 +2375,73 @@ fn hit_at(hwnd: HWND, x: i32, y: i32) -> u8 {
             return HIT_DETAIL;
         }
     }
+    if card.refresh.w > 0 && card.refresh.contains(x, y) {
+        return HIT_REFRESH;
+    }
+    if card.quit.contains(x, y) {
+        return HIT_QUIT;
+    }
+    if card
+        .scroll_view
+        .is_some_and(|viewport| !viewport.contains(x, y))
+    {
+        return 0;
+    }
     for row in &card.rows {
         if row.spot.contains(x, y) {
             return row.id;
         }
     }
-    if card.refresh.w > 0 && card.refresh.contains(x, y) {
-        HIT_REFRESH
-    } else if card.quit.contains(x, y) {
-        HIT_QUIT
-    } else {
-        0
+    0
+}
+
+fn scroll_panel(hwnd: HWND, delta: i32) {
+    let Some(view) = VIEW.lock().ok().map(|view| view.clone()) else {
+        return;
+    };
+    let dpi = window_dpi(hwnd);
+    let work = unsafe { popup_work_area(hwnd) };
+    let card = card_for(&view, dpi, work.bottom - work.top - scale(16, dpi));
+    let next = card
+        .scroll_offset
+        .saturating_add(delta)
+        .clamp(0, card.scroll_max);
+    if next == card.scroll_offset {
+        return;
     }
+    SCROLL_Y.store(next, Ordering::Relaxed);
+    HOVER.store(0, Ordering::Relaxed);
+    unsafe {
+        place(hwnd);
+        InvalidateRect(hwnd, std::ptr::null(), FALSE);
+    }
+}
+
+fn scroll_key(hwnd: HWND, key: u32) -> bool {
+    let Some(view) = VIEW.lock().ok().map(|view| view.clone()) else {
+        return false;
+    };
+    let dpi = window_dpi(hwnd);
+    let work = unsafe { popup_work_area(hwnd) };
+    let card = card_for(&view, dpi, work.bottom - work.top - scale(16, dpi));
+    if card.scroll_max == 0 {
+        return false;
+    }
+    let page = card
+        .scroll_view
+        .map(|viewport| (viewport.h - card.scroll_step).max(card.scroll_step))
+        .unwrap_or(card.scroll_step);
+    let next = match key {
+        key if key == VK_UP as u32 => card.scroll_offset - card.scroll_step,
+        key if key == VK_DOWN as u32 => card.scroll_offset + card.scroll_step,
+        key if key == VK_PRIOR as u32 => card.scroll_offset - page,
+        key if key == VK_NEXT as u32 => card.scroll_offset + page,
+        key if key == VK_HOME as u32 => 0,
+        key if key == VK_END as u32 => card.scroll_max,
+        _ => return false,
+    };
+    scroll_panel(hwnd, next - card.scroll_offset);
+    true
 }
 
 unsafe fn paint(hwnd: HWND) {
@@ -2265,7 +2453,8 @@ unsafe fn paint(hwnd: HWND) {
         .ok()
         .map(|view| view.clone())
         .unwrap_or(View::Loading);
-    let card = card_for(&view, dpi);
+    let work = popup_work_area(hwnd);
+    let card = card_for(&view, dpi, work.bottom - work.top - scale(16, dpi));
     paint_prepared(hdc, &card, dpi);
     EndPaint(hwnd, &ps);
 }
@@ -2340,16 +2529,6 @@ unsafe fn paint_card(
         "Codex",
         left,
     );
-    if let Some(spot) = card.trust_box {
-        text_in(
-            hdc,
-            fonts.body,
-            palette.muted,
-            spot.rect(),
-            &card.trust,
-            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
-        );
-    }
     if !card.plan.is_empty() {
         text_in(
             hdc,
@@ -2379,6 +2558,31 @@ unsafe fn paint_card(
             card.gear.rect(),
             "설정",
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+    }
+    let scroll_clip = card.scroll_view.and_then(|viewport| {
+        let saved = SaveDC(hdc);
+        if saved == 0 {
+            None
+        } else {
+            IntersectClipRect(
+                hdc,
+                viewport.x,
+                viewport.y,
+                viewport.x + viewport.w,
+                viewport.y + viewport.h,
+            );
+            Some(saved)
+        }
+    });
+    if let Some(spot) = card.trust_box {
+        text_in(
+            hdc,
+            fonts.body,
+            palette.muted,
+            spot.rect(),
+            &card.trust,
+            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
         );
     }
     if let Some(rule) = card.top_rule {
@@ -2712,6 +2916,9 @@ unsafe fn paint_card(
             &row.value,
             DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
+    }
+    if let Some(saved) = scroll_clip {
+        RestoreDC(hdc, saved);
     }
     if let Some(spot) = card.detail_box {
         let fill = if hover == HIT_DETAIL {
@@ -4928,7 +5135,7 @@ unsafe fn preview_scene(
             };
         }
     }
-    let card = card_for(view, dpi);
+    let card = card_for(view, dpi, i32::MAX);
     let ok = paint_to_file(&dir.join(name), &card, dpi);
     ShotNote {
         name,
