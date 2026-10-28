@@ -504,7 +504,7 @@ pub fn cycle_update(text: &str, pane: &str, remaining: u32) -> Option<String> {
     let mut rows = cycle_rows(text);
     let before = format_cycles(&rows);
     if let Some(row) = rows.iter_mut().find(|row| row.pane == pane) {
-        if remaining > row.close && remaining >= row.open {
+        if cycle_restart(row, remaining) {
             row.risen = true;
             row.open = remaining;
             row.low = remaining;
@@ -530,6 +530,16 @@ pub fn cycle_update(text: &str, pane: &str, remaining: u32) -> Option<String> {
     } else {
         Some(body)
     }
+}
+
+pub fn cycle_restarted(text: &str, pane: &str, remaining: u32) -> bool {
+    if (pane != "session" && pane != "week") || remaining > 100 {
+        return false;
+    }
+    cycle_rows(text)
+        .into_iter()
+        .find(|row| row.pane == pane)
+        .is_some_and(|row| cycle_restart(&row, remaining))
 }
 
 pub fn cycle_line(text: &str, pane: &str, remaining: u32) -> String {
@@ -564,6 +574,10 @@ struct CycleRow {
     open: u32,
     low: u32,
     close: u32,
+}
+
+fn cycle_restart(row: &CycleRow, remaining: u32) -> bool {
+    remaining > row.close && remaining >= row.open
 }
 
 fn cycle_rows(text: &str) -> Vec<CycleRow> {
@@ -666,14 +680,19 @@ pub fn pace_line(
         return PACE_GATHERING.to_string();
     };
     let drop = stretch.opened_left.saturating_sub(stretch.remaining);
+    let note = if stretch.elapsed < 60 * 60 || drop <= 1 {
+        " (짧은 기록에 따른 단순 추정)"
+    } else {
+        ""
+    };
     match pace {
         Pace::Steady => flat_phrase(stretch.watched),
         Pace::RefillsFirst => format!(
-            "{} 동안 {drop}% 줄었고, 채워지기 전에 괜찮아요",
-            span_phrase(stretch.elapsed)
+            "{} 동안 {drop}% 줄었고, 채워지기 전에 괜찮아요{note}",
+            span_phrase(stretch.elapsed),
         ),
         Pace::EmptyIn(seconds) => format!(
-            "{} 동안 {drop}% 줄어서, {} 바닥나요",
+            "{} 동안 {drop}% 줄어서, {} 바닥나요{note}",
             span_phrase(stretch.elapsed),
             pace_ahead(seconds)
         ),
@@ -901,9 +920,16 @@ pub fn recent_days(text: &str, pane: &str, year: i32, month: u8, day: u8) -> [Da
 }
 
 /// One line is `session|week YYYY-MM-DD open close low`.
-/// `low` is the smallest number seen that day and does not rise again.
+/// `low` is the smallest number in the current cycle for that day.
 /// Rows older than 14 days are dropped. Returns nothing when the file is unchanged.
-pub fn day_record(text: &str, pane: &str, date: &str, open: u32, close: u32) -> Option<String> {
+pub fn day_record(
+    text: &str,
+    pane: &str,
+    date: &str,
+    open: u32,
+    close: u32,
+    restarted: bool,
+) -> Option<String> {
     if (pane != "session" && pane != "week") || open > 100 || close > 100 {
         return None;
     }
@@ -920,7 +946,7 @@ pub fn day_record(text: &str, pane: &str, date: &str, open: u32, close: u32) -> 
     {
         row.2 = open;
         row.3 = close;
-        row.4 = row.4.min(low);
+        row.4 = if restarted { low } else { row.4.min(low) };
     } else {
         rows.push((pane.to_string(), date.to_string(), open, close, low));
     }
@@ -993,7 +1019,7 @@ fn format_days(rows: &[(String, String, u32, u32, u32)]) -> String {
 pub fn week_story(slots: &[DaySlot]) -> String {
     let known: Vec<&DaySlot> = slots.iter().filter(|slot| slot.open.is_some()).collect();
     if known.is_empty() {
-        return String::new();
+        return "기록이 쌓이면 최근 7일을 보여드려요".to_string();
     }
     if known.len() == 1 && known[0].today {
         return "오늘은 여기부터 기록해요".to_string();
@@ -1809,7 +1835,11 @@ mod tests {
         );
         assert_eq!(
             pace_line(&[(now - 180, 95)], now, 90, None),
-            "3분 동안 5% 줄어서, 약 50분 뒤 바닥나요"
+            "3분 동안 5% 줄어서, 약 50분 뒤 바닥나요 (짧은 기록에 따른 단순 추정)"
+        );
+        assert_eq!(
+            pace_line(&[(now - 45 * 60, 90)], now, 89, None),
+            "45분 동안 1% 줄어서, 약 2일 19시간 뒤 바닥나요 (짧은 기록에 따른 단순 추정)"
         );
         let held = [(now - 3600, 95u32), (now - 1800, 90)];
         assert_eq!(
@@ -1907,22 +1937,26 @@ mod tests {
             average_day_value(&recent_days("", "session", 2026, 10, 28)),
             None
         );
-        let mut text = day_record("", "session", "2026-10-26", 80, 70).unwrap();
-        text = day_record(&text, "session", "2026-10-28", 60, 55).unwrap();
+        let mut text = day_record("", "session", "2026-10-26", 80, 70, false).unwrap();
+        text = day_record(&text, "session", "2026-10-28", 60, 55, false).unwrap();
         assert_eq!(
             average_day_value(&recent_days(&text, "session", 2026, 10, 28)),
             None
         );
-        text = day_record(&text, "session", "2026-10-27", 70, 60).unwrap();
+        text = day_record(&text, "session", "2026-10-27", 70, 60, false).unwrap();
         assert_eq!(
             average_day_value(&recent_days(&text, "session", 2026, 10, 28)),
             Some("10% 줄었어요".into())
         );
-        let filled = day_record("", "session", "2026-10-26", 40, 50).unwrap();
-        let filled = day_record(&filled, "session", "2026-10-27", 50, 60).unwrap();
+        let filled = day_record("", "session", "2026-10-26", 40, 50, false).unwrap();
+        let filled = day_record(&filled, "session", "2026-10-27", 50, 60, false).unwrap();
         assert_eq!(
             average_day_value(&recent_days(&filled, "session", 2026, 10, 28)),
             Some("10% 채워졌어요".into())
+        );
+        assert_eq!(
+            week_story(&recent_days("", "session", 2026, 10, 28)),
+            "기록이 쌓이면 최근 7일을 보여드려요"
         );
     }
 
@@ -1930,9 +1964,9 @@ mod tests {
     fn recent_days_keep_first_and_last_for_one_week() {
         assert_eq!(weekday_name(1970, 1, 1), "목");
         assert_eq!(weekday_name(2026, 10, 28), "수");
-        let text = day_record("", "session", "2026-10-28", 90, 86).unwrap();
-        let text = day_record(&text, "session", "2026-10-22", 70, 64).unwrap();
-        assert!(day_record(&text, "session", "2026-10-28", 90, 86).is_none());
+        let text = day_record("", "session", "2026-10-28", 90, 86, false).unwrap();
+        let text = day_record(&text, "session", "2026-10-22", 70, 64, false).unwrap();
+        assert!(day_record(&text, "session", "2026-10-28", 90, 86, false).is_none());
         let week = recent_days(&text, "session", 2026, 10, 28);
         assert_eq!(
             week.map(|slot| slot.name),
@@ -1948,13 +1982,13 @@ mod tests {
         assert_eq!(week[1].open, None);
         let other = recent_days(&text, "week", 2026, 10, 28);
         assert!(other.iter().all(|slot| slot.open.is_none()));
-        let old = day_record(&text, "session", "2026-10-28", 90, 80).unwrap();
+        let old = day_record(&text, "session", "2026-10-28", 90, 80, false).unwrap();
         assert!(!old.contains("2026-10-01"));
         let stale = format!("{text}session 2026-10-01 10 9\n");
-        let trimmed = day_record(&stale, "session", "2026-10-28", 90, 86).unwrap();
+        let trimmed = day_record(&stale, "session", "2026-10-28", 90, 86, false).unwrap();
         assert!(!trimmed.contains("2026-10-01"));
-        let dipped = day_record(&text, "session", "2026-10-28", 90, 70).unwrap();
-        let back = day_record(&dipped, "session", "2026-10-28", 90, 88).unwrap();
+        let dipped = day_record(&text, "session", "2026-10-28", 90, 70, false).unwrap();
+        let back = day_record(&dipped, "session", "2026-10-28", 90, 88, false).unwrap();
         let week = recent_days(&back, "session", 2026, 10, 28);
         assert_eq!(week[6].close, Some(88));
         assert_eq!(week[6].low, Some(70));
@@ -1964,10 +1998,35 @@ mod tests {
         );
         assert_eq!(yesterday_close(&week), None);
         assert_eq!(earlier_low(&week), Some(("목", 64)));
-        let with_yesterday = day_record(&back, "session", "2026-10-27", 80, 75).unwrap();
+        let with_yesterday = day_record(&back, "session", "2026-10-27", 80, 75, false).unwrap();
         let week = recent_days(&with_yesterday, "session", 2026, 10, 28);
         assert_eq!(yesterday_close(&week), Some(75));
-        assert_eq!(week_story(&recent_days("", "session", 2026, 10, 28)), "");
+    }
+
+    #[test]
+    fn a_reset_starts_a_new_daily_low_and_preserves_previous_days() {
+        let previous_cycle = "session 0 98 46 46\n";
+        assert!(cycle_restarted(previous_cycle, "session", 98));
+        assert_eq!(
+            cycle_update(previous_cycle, "session", 98).as_deref(),
+            Some("session 1 98 98 98\n")
+        );
+        assert!(!cycle_restarted(previous_cycle, "session", 97));
+        assert!(!cycle_restarted(previous_cycle, "other", 98));
+
+        let days = "session 2026-10-27 98 46 46\nsession 2026-10-28 98 46 46\n";
+        let reset = day_record(days, "session", "2026-10-28", 98, 98, true).unwrap();
+        let week = recent_days(&reset, "session", 2026, 10, 28);
+        assert_eq!(week[5].low, Some(46));
+        assert_eq!(week[6].open, Some(98));
+        assert_eq!(week[6].close, Some(98));
+        assert_eq!(week[6].low, Some(98));
+
+        let after_use = day_record(&reset, "session", "2026-10-28", 98, 97, false).unwrap();
+        assert_eq!(
+            recent_days(&after_use, "session", 2026, 10, 28)[6].low,
+            Some(97)
+        );
     }
 
     #[test]

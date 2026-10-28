@@ -142,10 +142,8 @@ impl Spot {
 struct Fact {
     label: Spot,
     value: Spot,
-    rule: Option<Spot>,
     name: String,
     text: String,
-    wrap: bool,
 }
 
 struct DayCol {
@@ -184,7 +182,7 @@ struct Card {
     refill_box: Option<Spot>,
     note_box: Option<Spot>,
     trust_box: Option<Spot>,
-    ledger_rule: Option<Spot>,
+    ledger_label: Option<Spot>,
     facts: Vec<Fact>,
     days_rule: Option<Spot>,
     days_label: Option<Spot>,
@@ -1015,7 +1013,7 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
                     charge_fill = state.fraction;
                     if state.seconds_left > 0 {
                         if let (Some(today), Some(moment)) = (local_civil(now), local_civil(at)) {
-                            refill = usage::clock_when(today, moment);
+                            refill = crate::settings::tile_clock(&usage::clock_when(today, moment));
                         }
                     }
                 }
@@ -1243,7 +1241,7 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
     if !tiles.is_empty() {
         let gap = s(10);
         let tile_w = (content_w - gap) / tiles.len() as i32;
-        let tile_h = s(152);
+        let tile_h = s(144);
         for (index, tile) in tiles.iter_mut().enumerate() {
             tile.spot = Spot {
                 x: content_x + (tile_w + gap) * index as i32,
@@ -1252,7 +1250,7 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
                 h: tile_h,
             };
         }
-        y += tile_h + s(16);
+        y += tile_h + s(10);
     }
     let has_charge = !charge.is_empty() || !refill.is_empty();
     let charge_box;
@@ -1283,7 +1281,7 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
                 x: content_x,
                 y,
                 w: content_w,
-                h: s(22),
+                h: if refill.contains('\n') { s(36) } else { s(22) },
             };
             y += spot.h + s(8);
             Some(spot)
@@ -1300,7 +1298,7 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
         } else {
             None
         };
-        y += s(14);
+        y += s(10);
     }
     let status_box = if status.is_empty() {
         None
@@ -1311,12 +1309,12 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
             w: content_w,
             h: s(22),
         };
-        y += spot.h + s(12);
+        y += spot.h + s(8);
         Some(spot)
     };
     let fold = crate::settings::popup_fold(DETAIL_OPEN.load(Ordering::Relaxed));
     if fold.pace || fold.ledger || fold.days {
-        y += s(12);
+        y += s(8);
     }
     let pace_caption_box;
     let pace_box;
@@ -1338,7 +1336,7 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
             w: content_w,
             h: lines * s(22) + s(4),
         };
-        y += body.h + s(12);
+        y += body.h + s(8);
         pace_caption_box = Some(caption);
         pace_box = Some(body);
     }
@@ -1352,38 +1350,26 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
             w: content_w,
             h: lines * s(22) + s(4),
         };
-        y += spot.h + s(10);
+        y += spot.h + s(6);
         Some(spot)
     };
     let mut facts = Vec::new();
-    let ledger_rule = if !fold.ledger || fact_rows.is_empty() {
+    let ledger_label = if !fold.ledger || fact_rows.is_empty() {
         None
     } else {
         let spot = Spot {
             x: content_x,
             y,
             w: content_w,
-            h: rule_h,
+            h: s(18),
         };
-        y += rule_h + s(12);
+        y += spot.h + s(4);
         Some(spot)
     };
     if fold.ledger {
-        let fact_count = fact_rows.len();
-        for (index, (name, text)) in fact_rows.into_iter().enumerate() {
+        for (name, text) in fact_rows {
             let label_w = content_w * 30 / 100;
-            let row_h = s(32);
-            let last = index + 1 == fact_count;
-            let rule = if last {
-                None
-            } else {
-                Some(Spot {
-                    x: content_x,
-                    y: y + row_h + s(4),
-                    w: content_w,
-                    h: rule_h,
-                })
-            };
+            let row_h = s(28);
             facts.push(Fact {
                 label: Spot {
                     x: content_x,
@@ -1397,25 +1383,21 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
                     w: content_w - label_w,
                     h: row_h,
                 },
-                rule,
                 name,
                 text,
-                wrap: false,
             });
             y += row_h + s(4);
-            if !last {
-                y += rule_h + s(4);
-            }
         }
     }
     if !facts.is_empty() {
-        y += s(14);
+        y += s(8);
     }
     let days_rule;
     let days_label;
     let days_open_label;
     let days_close_label;
     let mut days = Vec::new();
+    let has_day_history = day_slots.iter().any(|slot| slot.open.is_some());
     if day_slots.is_empty() || !fold.days {
         days_rule = None;
         days_label = None;
@@ -1428,7 +1410,7 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
             w: content_w,
             h: rule_h,
         };
-        y += rule_h + s(12);
+        y += rule_h + s(8);
         days_rule = Some(spot);
         let label = Spot {
             x: content_x,
@@ -1436,7 +1418,7 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
             w: content_w,
             h: s(18),
         };
-        y += label.h + s(6);
+        y += label.h + s(4);
         days_label = Some(label);
         let gap = s(4);
         let side = s(36);
@@ -1446,63 +1428,65 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
         let num_h = s(18);
         let open_y = y + name_h + s(4);
         let close_y = open_y + num_h;
-        days_open_label = Some(Spot {
+        days_open_label = has_day_history.then_some(Spot {
             x: content_x,
             y: open_y,
             w: side,
             h: num_h,
         });
-        days_close_label = Some(Spot {
+        days_close_label = has_day_history.then_some(Spot {
             x: content_x,
             y: close_y,
             w: side,
             h: num_h,
         });
-        for (index, slot) in day_slots.iter().enumerate() {
-            let x = x0 + (col_w + gap) * index as i32;
-            let tick = if slot.today {
-                Some(Spot {
-                    x: x + (col_w - s(12)) / 2,
-                    y: y + name_h,
-                    w: s(12),
-                    h: s(2).max(2),
-                })
-            } else {
-                None
-            };
-            days.push(DayCol {
-                name_box: Spot {
-                    x,
-                    y,
-                    w: col_w,
-                    h: name_h,
-                },
-                open_box: Spot {
-                    x,
-                    y: open_y,
-                    w: col_w,
-                    h: num_h,
-                },
-                close_box: Spot {
-                    x,
-                    y: close_y,
-                    w: col_w,
-                    h: num_h,
-                },
-                tick,
-                name: slot.name.to_string(),
-                open: slot
-                    .open
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "·".to_string()),
-                close: slot
-                    .close
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "·".to_string()),
-                today: slot.today,
-            });
+        if has_day_history {
+            for (index, slot) in day_slots.iter().enumerate() {
+                let x = x0 + (col_w + gap) * index as i32;
+                let tick = if slot.today {
+                    Some(Spot {
+                        x: x + (col_w - s(12)) / 2,
+                        y: y + name_h,
+                        w: s(12),
+                        h: s(2).max(2),
+                    })
+                } else {
+                    None
+                };
+                days.push(DayCol {
+                    name_box: Spot {
+                        x,
+                        y,
+                        w: col_w,
+                        h: name_h,
+                    },
+                    open_box: Spot {
+                        x,
+                        y: open_y,
+                        w: col_w,
+                        h: num_h,
+                    },
+                    close_box: Spot {
+                        x,
+                        y: close_y,
+                        w: col_w,
+                        h: num_h,
+                    },
+                    tick,
+                    name: slot.name.to_string(),
+                    open: slot
+                        .open
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "·".to_string()),
+                    close: slot
+                        .close
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "·".to_string()),
+                    today: slot.today,
+                });
+            }
+            y = close_y + num_h + s(4);
         }
-        y = close_y + num_h + s(6);
     }
     let story = usage::week_story(&day_slots);
     let story_box = if !fold.days || story.is_empty() {
@@ -1515,11 +1499,11 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
             w: content_w,
             h: lines * s(22) + s(4),
         };
-        y += spot.h + s(16);
+        y += spot.h + s(10);
         Some(spot)
     };
     if fold.pace || fold.ledger || fold.days {
-        y += s(8);
+        y += s(4);
     }
     let detail_open = DETAIL_OPEN.load(Ordering::Relaxed);
     let (detail_box, detail_label, detail_hint) = if matches!(view, View::Ready(_)) {
@@ -1529,7 +1513,7 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
             w: content_w,
             h: s(44),
         };
-        y += spot.h + s(12);
+        y += spot.h + s(8);
         let label = if detail_open { "접기" } else { "자세히" };
         let hint = if detail_open {
             String::new()
@@ -1546,8 +1530,8 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
         w: content_w,
         h: rule_h,
     });
-    y += rule_h + s(12);
-    let button_w = s(108);
+    y += rule_h + s(8);
+    let button_w = s(92);
     let refresh = Spot {
         x: width - content_x - button_w,
         y,
@@ -1587,7 +1571,7 @@ fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
         refill_box,
         note_box,
         trust_box,
-        ledger_rule,
+        ledger_label,
         facts,
         days_rule,
         days_label,
@@ -1678,7 +1662,7 @@ fn shift_body(card: &mut Card, by: i32) {
     shift_optional(&mut card.refill_box, by);
     shift_optional(&mut card.note_box, by);
     shift_optional(&mut card.trust_box, by);
-    shift_optional(&mut card.ledger_rule, by);
+    shift_optional(&mut card.ledger_label, by);
     shift_optional(&mut card.days_rule, by);
     shift_optional(&mut card.days_label, by);
     shift_optional(&mut card.days_open_label, by);
@@ -1692,7 +1676,6 @@ fn shift_body(card: &mut Card, by: i32) {
     for fact in &mut card.facts {
         fact.label.y += by;
         fact.value.y += by;
-        shift_optional(&mut fact.rule, by);
     }
     for day in &mut card.days {
         day.name_box.y += by;
@@ -1923,7 +1906,7 @@ fn settings_card(dpi: i32) -> Card {
         refill_box: None,
         note_box: Some(note_box),
         trust_box: None,
-        ledger_rule: None,
+        ledger_label: None,
         facts: Vec::new(),
         days_rule: None,
         days_label: None,
@@ -2473,7 +2456,6 @@ unsafe fn paint_prepared(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Car
         },
         outer,
         palette.depth,
-        false,
     );
     let inset = px(&card, 7);
     if card.width > inset * 2 + 24 && card.height > inset * 2 + 24 {
@@ -2487,7 +2469,6 @@ unsafe fn paint_prepared(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Car
             },
             px(&card, 26),
             palette.plate,
-            true,
         );
     }
     paint_card(hdc, card, &fonts, &palette);
@@ -2586,7 +2567,7 @@ unsafe fn paint_card(
         );
     }
     if let Some(rule) = card.top_rule {
-        blend_round(hdc, rule, 0, palette.line, false);
+        blend_round(hdc, rule, 0, palette.line);
     }
     if let Some(scope) = card.scope_box {
         text_in(
@@ -2600,10 +2581,10 @@ unsafe fn paint_card(
     }
     if let Some(rail) = card.rail {
         let [red, green, blue] = color_rgb(accent);
-        blend_round(hdc, rail, rail.w, [red, green, blue, 255], false);
+        blend_round(hdc, rail, rail.w, [red, green, blue, 255]);
     }
     if card.hero_big {
-        paint_meter(hdc, card, fonts, palette.ink);
+        paint_meter(hdc, card, fonts, palette);
     } else {
         text_in(
             hdc,
@@ -2654,13 +2635,18 @@ unsafe fn paint_card(
         );
     }
     if let Some(spot) = card.refill_box {
+        let flags = if card.refill.contains('\n') {
+            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX
+        } else {
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX
+        };
         text_in(
             hdc,
             fonts.quiet,
             palette.muted,
             spot.rect(),
             &card.refill,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            flags,
         );
     }
     if let Some(spot) = card.charge_bar {
@@ -2745,7 +2731,7 @@ unsafe fn paint_card(
             fonts.quiet,
             palette.muted,
             spot.rect(),
-            "이 속도",
+            "속도 예상",
             left,
         );
     }
@@ -2769,27 +2755,24 @@ unsafe fn paint_card(
             DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
         );
     }
-    if let Some(rule) = card.ledger_rule {
-        blend_round(hdc, rule, 0, palette.line, false);
+    if let Some(spot) = card.ledger_label {
+        text_in(
+            hdc,
+            fonts.quiet,
+            palette.muted,
+            spot.rect(),
+            "오늘 기록",
+            left,
+        );
     }
     for fact in &card.facts {
-        let label_flags = if fact.wrap {
-            DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX
-        } else {
-            left
-        };
-        let value_flags = if fact.wrap {
-            DT_RIGHT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX
-        } else {
-            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX
-        };
         text_in(
             hdc,
             fonts.label,
             palette.muted,
             fact.label.rect(),
             &fact.name,
-            label_flags,
+            left,
         );
         text_in(
             hdc,
@@ -2797,14 +2780,11 @@ unsafe fn paint_card(
             palette.ink,
             fact.value.rect(),
             &fact.text,
-            value_flags,
+            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
-        if let Some(rule) = fact.rule {
-            blend_round(hdc, rule, 0, palette.line, false);
-        }
     }
     if let Some(rule) = card.days_rule {
-        blend_round(hdc, rule, 0, palette.line, false);
+        blend_round(hdc, rule, 0, palette.line);
     }
     if let Some(spot) = card.days_label {
         text_in(
@@ -2839,7 +2819,7 @@ unsafe fn paint_card(
         );
         if let Some(tick) = col.tick {
             let [red, green, blue] = color_rgb(palette.ink);
-            blend_round(hdc, tick, tick.h, [red, green, blue, 255], false);
+            blend_round(hdc, tick, tick.h, [red, green, blue, 255]);
         }
         text_in(
             hdc,
@@ -2960,26 +2940,16 @@ unsafe fn paint_card(
         }
     }
     if let Some(rule) = card.bottom_rule {
-        blend_round(hdc, rule, 0, palette.line, false);
+        blend_round(hdc, rule, 0, palette.line);
     }
     if card.refresh.w > 0 {
-        let refresh_fill = if hover == HIT_REFRESH {
-            palette.hover
-        } else {
-            palette.card
-        };
-        stroke_panel(
-            hdc,
-            card.refresh,
-            card.refresh.h / 2,
-            refresh_fill,
-            palette.edge,
-            px(card, 1).max(1),
-        );
+        if hover == HIT_REFRESH {
+            fill_round(hdc, card.refresh, card.refresh.h / 2, palette.soft);
+        }
         text_in(
             hdc,
-            fonts.label,
-            palette.ink,
+            fonts.quiet,
+            palette.muted,
             card.refresh.rect(),
             "다시 확인",
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
@@ -3003,7 +2973,7 @@ unsafe fn paint_meter(
     hdc: windows_sys::Win32::Graphics::Gdi::HDC,
     card: &Card,
     fonts: &Fonts,
-    accent: u32,
+    palette: &Palette,
 ) {
     let shown = animated_remaining(card.remaining);
     SHOWN.store(shown as i32, Ordering::Relaxed);
@@ -3012,7 +2982,7 @@ unsafe fn paint_meter(
     text_in(
         hdc,
         fonts.hero,
-        accent,
+        palette.ink,
         card.hero_box.rect(),
         &digits,
         DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX,
@@ -3021,7 +2991,7 @@ unsafe fn paint_meter(
     text_in(
         hdc,
         fonts.unit,
-        accent,
+        palette.ink,
         rect(
             card.hero_box.x + width + px(card, 2),
             card.hero_box.y + card.hero_box.h - unit_h,
@@ -3082,7 +3052,7 @@ fn detail_well(card: &Card) -> Option<Spot> {
         card.pace_caption_box,
         card.pace_box,
         card.cycle_box,
-        card.ledger_rule,
+        card.ledger_label,
         card.days_rule,
         card.days_label,
         card.story_box,
@@ -3093,9 +3063,6 @@ fn detail_well(card: &Card) -> Option<Spot> {
     }
     for fact in &card.facts {
         spots.push(fact.label);
-        if let Some(rule) = fact.rule {
-            spots.push(rule);
-        }
     }
     for col in &card.days {
         spots.push(col.name_box);
@@ -3147,7 +3114,7 @@ unsafe fn stroke_panel(
     line: [u8; 4],
     inset: i32,
 ) {
-    blend_round(hdc, spot, radius, line, false);
+    blend_round(hdc, spot, radius, line);
     if spot.w <= inset * 2 + 4 || spot.h <= inset * 2 + 4 {
         return;
     }
@@ -3161,7 +3128,6 @@ unsafe fn stroke_panel(
         },
         (radius - inset).max(0),
         fill,
-        false,
     );
 }
 
@@ -3244,7 +3210,7 @@ unsafe fn make_fonts(dpi: i32) -> Fonts {
         figure: font(scale(22, dpi), FW_SEMIBOLD, "Cascadia Mono"),
         lead: font(scale(16, dpi), FW_SEMIBOLD, "Segoe UI"),
         label: font(scale(14, dpi), FW_SEMIBOLD, "Segoe UI"),
-        body: font(scale(15, dpi), FW_NORMAL, "Segoe UI"),
+        body: font(scale(16, dpi), FW_NORMAL, "Segoe UI"),
         quiet: font(scale(14, dpi), FW_NORMAL, "Segoe UI"),
         digit: font(scale(15, dpi), FW_SEMIBOLD, "Cascadia Mono"),
     }
@@ -4274,15 +4240,15 @@ fn palette_now() -> Palette {
                 crate::look::LIGHT_DEPTH.r,
                 crate::look::LIGHT_DEPTH.g,
                 crate::look::LIGHT_DEPTH.b,
-                214,
+                255,
             ],
             plate: [
                 crate::look::LIGHT_PLATE.r,
                 crate::look::LIGHT_PLATE.g,
                 crate::look::LIGHT_PLATE.b,
-                234,
+                255,
             ],
-            card: [255, 255, 255, 230],
+            card: [255, 255, 255, 255],
             edge: [
                 crate::look::MUTED.r,
                 crate::look::MUTED.g,
@@ -4315,19 +4281,19 @@ fn palette_now() -> Palette {
                 crate::look::DEPTH.r,
                 crate::look::DEPTH.g,
                 crate::look::DEPTH.b,
-                216,
+                255,
             ],
             plate: [
                 crate::look::PLATE.r,
                 crate::look::PLATE.g,
                 crate::look::PLATE.b,
-                232,
+                255,
             ],
             card: [
                 crate::look::CARD.r,
                 crate::look::CARD.g,
                 crate::look::CARD.b,
-                236,
+                255,
             ],
             edge: [
                 crate::look::EDGE.r,
@@ -4487,17 +4453,22 @@ fn note_change(snapshot: &Snapshot) {
     let today = local_civil(now)
         .map(|time| format!("{:04}-{:02}-{:02}", time.year, time.month, time.day))
         .unwrap_or_default();
+    let restarted = usage::cycle_restarted(&read_cycle(), key, focus.remaining);
     let previous = read_memory();
-    let recent = previous.as_ref().and_then(|previous| {
-        if previous.key != key {
-            return None;
-        }
-        usage::change_line(
-            now.saturating_sub(previous.at),
-            previous.left,
-            focus.remaining,
-        )
-    });
+    let recent = if restarted {
+        None
+    } else {
+        previous.as_ref().and_then(|previous| {
+            if previous.key != key {
+                return None;
+            }
+            usage::change_line(
+                now.saturating_sub(previous.at),
+                previous.left,
+                focus.remaining,
+            )
+        })
+    };
     let recent_base = previous.and_then(|previous| {
         if previous.key != key {
             None
@@ -4506,7 +4477,7 @@ fn note_change(snapshot: &Snapshot) {
         }
     });
     write_memory(key, focus.remaining, now);
-    let open = read_day()
+    let mut open = read_day()
         .and_then(|mark| {
             if mark.day == today && mark.pane == key {
                 Some(mark.open)
@@ -4515,9 +4486,12 @@ fn note_change(snapshot: &Snapshot) {
             }
         })
         .unwrap_or(focus.remaining);
+    if restarted {
+        open = focus.remaining;
+    }
     if !today.is_empty() {
         write_day(&today, key, open);
-        remember_days(key, &today, open, focus.remaining);
+        remember_days(key, &today, open, focus.remaining, restarted);
     }
     remember_pace(key, now, focus.remaining);
     remember_cycle(key, focus.remaining);
@@ -4575,12 +4549,12 @@ fn read_days() -> String {
         .unwrap_or_default()
 }
 
-fn remember_days(pane: &str, date: &str, open: u32, close: u32) {
+fn remember_days(pane: &str, date: &str, open: u32, close: u32, restarted: bool) {
     let Some(path) = days_path() else {
         return;
     };
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let Some(next) = usage::day_record(&existing, pane, date, open, close) else {
+    let Some(next) = usage::day_record(&existing, pane, date, open, close, restarted) else {
         return;
     };
     let _ = std::fs::write(path, next);
@@ -4696,7 +4670,6 @@ unsafe fn blend_round(
     spot: Spot,
     radius: i32,
     rgba: [u8; 4],
-    sheen: bool,
 ) {
     if spot.w <= 1 || spot.h <= 1 {
         return;
@@ -4711,17 +4684,7 @@ unsafe fn blend_round(
             if cover <= 0.0 {
                 continue;
             }
-            let (mut red, mut green, mut blue, alpha) = (rgba[0], rgba[1], rgba[2], rgba[3]);
-            if sheen {
-                let span = (height as f32 * 0.38).max(18.0);
-                if (y as f32) < span {
-                    let t = 1.0 - (y as f32 / span);
-                    let lift = (t * t * 26.0) as i16;
-                    red = (red as i16 + lift).clamp(0, 255) as u8;
-                    green = (green as i16 + lift).clamp(0, 255) as u8;
-                    blue = (blue as i16 + lift + lift / 4).clamp(0, 255) as u8;
-                }
-            }
+            let (red, green, blue, alpha) = (rgba[0], rgba[1], rgba[2], rgba[3]);
             let alpha = (alpha as f32 * cover.min(1.0)) as u8;
             let index = ((y * width + x) * 4) as usize;
             pixels[index] = premul(blue, alpha);

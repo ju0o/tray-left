@@ -712,6 +712,11 @@ mod tests {
             tile_clock("10월 30일 오전 5시 12분"),
             "10월 30일\n오전 5시 12분"
         );
+        assert_eq!(
+            tile_clock("12월 31일 오후 11시 59분"),
+            "12월 31일\n오후 11시 59분"
+        );
+        assert_eq!(tile_clock("12월 31일 AM 11:59"), "12월 31일\nAM 11:59");
         assert_eq!(tile_clock("오늘 오전 8시 39분"), "오늘 오전 8시 39분");
         assert_eq!(tile_clock("내일 오전 6시"), "내일 오전 6시");
         assert_eq!(tile_clock("지금 채워져요"), "지금 채워져요");
