@@ -8,7 +8,7 @@
 ## 새 에이전트는 여기서 시작한다
 
 1. 작업 폴더는 이 컴퓨터의 `/home/skkse12/Desktop/Projects/Core/tray-left` 이다.
-2. 브랜치는 `jusage-v0.3` 이다. 시작 커밋은 `73f2b9d6d88c3ad730a9e5ba1047c29ec4798844` 이다.
+2. 브랜치는 `jusage-v0.3` 이다. 브랜치 끝을 그대로 쓴다. 기능이 들어 있는 커밋은 `73f2b9d6d88c3ad730a9e5ba1047c29ec4798844` 이고, 이 문서는 그 바로 다음 커밋이다.
 3. 이 파일을 먼저 읽는다.
 4. 형제 폴더 `/home/skkse12/Desktop/Projects/Core/ai-agent-monitor` 는 다른 제품이다. Jusage 작업 폴더로 열지 않는다.
 
