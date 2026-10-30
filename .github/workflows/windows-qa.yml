@@ -1,0 +1,57 @@
+name: Windows RC QA
+
+on:
+  push:
+    branches:
+      - jusage-v0.3
+    paths:
+      - ".github/workflows/windows-qa.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "src/**"
+      - "qa/windows/**"
+      - "assets/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-rc:
+    name: Windows x64 release and isolated QA
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out selected source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build, test, compare and package
+        shell: pwsh
+        run: '& .\qa\windows\run-rc.ps1'
+
+      - name: Upload QA package and diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: jusage-v0.3.0-rc-qa
+          path: |
+            ${{ runner.temp }}\jusage-rc-evidence\
+            ${{ runner.temp }}\jusage-rc-package\
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Keep a non-reproducible build out of GO status
+        if: always()
+        shell: pwsh
+        run: |
+          $qaResults = Join-Path $env:RUNNER_TEMP 'jusage-rc-evidence\qa-results.txt'
+          $statusLine = if (Test-Path -LiteralPath $qaResults) {
+            Get-Content -LiteralPath $qaResults | Where-Object { $_ -like 'binary_reproducibility=*' } | Select-Object -First 1
+          }
+          $status = if ($statusLine) { $statusLine.Substring('binary_reproducibility='.Length) } else { 'NOT_EVALUATED' }
+          switch ($status) {
+            'FAIL' { throw 'Independent Release binary hashes differ; keep this RC on HOLD.' }
+            'PASS' { Write-Output 'Binary reproducibility: PASS.' }
+            default { Write-Output "Binary reproducibility: $status; no mismatch was evaluated." }
+          }

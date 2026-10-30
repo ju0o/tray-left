@@ -1,12 +1,14 @@
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use windows_sys::Win32::Foundation::{
-    GetLastError, ERROR_ALREADY_EXISTS, FALSE, COLORREF, FILETIME, HWND, LPARAM, RECT, SIZE,
-    SYSTEMTIME, TRUE, WPARAM,
+    CloseHandle, GetLastError, COLORREF, ERROR_ALREADY_EXISTS, FALSE, FILETIME, HWND,
+    INVALID_HANDLE_VALUE, LPARAM, RECT, SIZE, SYSTEMTIME, TRUE, WPARAM,
 };
 use windows_sys::Win32::Graphics::Dwm::{
     DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -15,46 +17,53 @@ use windows_sys::Win32::Graphics::Dwm::{
 use windows_sys::Win32::Graphics::Gdi::{
     AlphaBlend, BeginPaint, CreateBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontW,
     CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
-    GetDC, GetDeviceCaps, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, RoundRect,
-    SelectObject, SetBkMode, SetTextCharacterExtra, SetTextColor, SetWindowRgn, AC_SRC_ALPHA,
-    AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS, DT_CENTER,
-    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER,
-    FW_NORMAL, FW_SEMIBOLD, HFONT, HGDIOBJ, LOGPIXELSX, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
+    GetDC, GetDeviceCaps, GetMonitorInfoW, GetTextExtentPoint32W, IntersectClipRect,
+    InvalidateRect, MonitorFromRect, ReleaseDC, RestoreDC, RoundRect, SaveDC, SelectObject,
+    SetBkMode, SetTextCharacterExtra, SetTextColor, SetWindowRgn, AC_SRC_ALPHA, AC_SRC_OVER,
+    BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS, DT_BOTTOM, DT_CENTER,
+    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_TOP, DT_VCENTER,
+    DT_WORDBREAK, FW_NORMAL, FW_SEMIBOLD, HFONT, HGDIOBJ, LOGPIXELSX, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
-use windows_sys::Win32::Storage::FileSystem::FileTimeToLocalFileTime;
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FileTimeToLocalFileTime, GetFinalPathNameByHandleW, GetFullPathNameW,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING, VOLUME_NAME_DOS,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::System::Time::FileTimeToSystemTime;
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegDeleteKeyValueW, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW,
-    RegSetValueExW,
-    HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE,
-    REG_DWORD, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_READ,
+    KEY_SET_VALUE, REG_DWORD, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::System::Time::FileTimeToSystemTime;
 use windows_sys::Win32::UI::Controls::{MARGINS, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_DOWN,
+    VK_END, VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_UP,
 };
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW,
+    Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyIcon, DispatchMessageW,
-    FindWindowW, GetMessageW, GetSystemMetrics, IsWindowVisible, KillTimer,
-    LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow,
+    FindWindowW, GetMessageW, GetSystemMetrics, IsWindowVisible, KillTimer, LoadCursorW,
+    PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetCursor, SetForegroundWindow,
     SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage, CS_DROPSHADOW,
     CS_HREDRAW, CS_VREDRAW, HICON, ICONINFO, IDC_ARROW, IDC_HAND, SM_CXSMICON, SPI_GETWORKAREA,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP,
-    WM_SETCURSOR, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_POPUP,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WA_INACTIVE, WM_ACTIVATE, WM_CLOSE, WM_DESTROY,
+    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETICON, WM_SETTINGCHANGE, WM_TIMER,
+    WNDCLASSW, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use crate::icon::remaining_icon;
 use crate::usage::{self, Civil, FetchFail, Pane, Reading, Snapshot};
 
-const CARD_W: i32 = 440;
+const CARD_W: i32 = 392;
 const MOTION_FRAMES: u8 = 16;
 const COUNT_FRAMES: u8 = 20;
 const TRAY_MSG: u32 = 0x8000 + 1;
@@ -64,6 +73,39 @@ const ICON_ID: u32 = 1;
 const HIT_CLOSE: u8 = 1;
 const HIT_REFRESH: u8 = 2;
 const HIT_QUIT: u8 = 3;
+const HIT_SETTINGS: u8 = 4;
+const HIT_DETAIL: u8 = 5;
+const ROW_SOURCE: u8 = 10;
+const ROW_DISTRO: u8 = 11;
+const ROW_FOCUS: u8 = 12;
+const ROW_START: u8 = 13;
+const ROW_THEME: u8 = 14;
+const ROW_DONE: u8 = 15;
+const ROW_PATH: u8 = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreviewFailure {
+    pub code: i32,
+    pub stage: &'static str,
+    pub scene: Option<&'static str>,
+}
+
+impl PreviewFailure {
+    const fn new(code: i32, stage: &'static str) -> Self {
+        Self {
+            code,
+            stage,
+            scene: None,
+        }
+    }
+
+    const fn in_scene(self, scene: &'static str) -> Self {
+        Self {
+            scene: Some(scene),
+            ..self
+        }
+    }
+}
 
 #[derive(Clone)]
 enum View {
@@ -77,10 +119,13 @@ struct Fonts {
     dpi: i32,
     brand: HFONT,
     hero: HFONT,
+    unit: HFONT,
     figure: HFONT,
     lead: HFONT,
+    label: HFONT,
     body: HFONT,
     quiet: HFONT,
+    digit: HFONT,
 }
 
 unsafe impl Send for Fonts {}
@@ -90,6 +135,7 @@ struct Tile {
     label: String,
     value: String,
     mood: String,
+    clock: String,
     accent: u32,
     hot: bool,
 }
@@ -117,26 +163,77 @@ impl Spot {
     }
 }
 
+struct Fact {
+    label: Spot,
+    value: Spot,
+    name: String,
+    text: String,
+}
+
+struct DayCol {
+    name_box: Spot,
+    open_box: Spot,
+    close_box: Spot,
+    tick: Option<Spot>,
+    name: String,
+    open: String,
+    close: String,
+    today: bool,
+}
+
 struct Card {
     width: i32,
     height: i32,
+    scroll_view: Option<Spot>,
+    scroll_offset: i32,
+    scroll_max: i32,
+    scroll_step: i32,
     close: Spot,
+    gear: Spot,
     refresh: Spot,
     quit: Spot,
     brand_box: Spot,
     plan_box: Spot,
     hero_box: Spot,
     scope_box: Option<Spot>,
+    rail: Option<Spot>,
+    mood_box: Option<Spot>,
     bar: Option<Spot>,
+    charge_box: Option<Spot>,
+    charge_bar: Option<Spot>,
+    top_rule: Option<Spot>,
+    bottom_rule: Option<Spot>,
     refill_box: Option<Spot>,
     note_box: Option<Spot>,
-    delta_box: Option<Spot>,
+    trust_box: Option<Spot>,
+    ledger_label: Option<Spot>,
+    facts: Vec<Fact>,
+    days_rule: Option<Spot>,
+    days_label: Option<Spot>,
+    days_open_label: Option<Spot>,
+    days_close_label: Option<Spot>,
+    days: Vec<DayCol>,
+    story_box: Option<Spot>,
+    story: String,
+    pace_caption_box: Option<Spot>,
+    pace_box: Option<Spot>,
+    pace: String,
+    cycle_box: Option<Spot>,
+    cycle: String,
+    detail_box: Option<Spot>,
+    detail_label: String,
+    detail_hint: String,
     tiles: Vec<Tile>,
+    rows: Vec<SettingRow>,
+    status_box: Option<Spot>,
+    status: String,
     hero: String,
     scope: String,
     refill: String,
+    charge: String,
+    charge_fill: f32,
     note: String,
-    delta: String,
+    trust: String,
     plan: String,
     hero_big: bool,
     remaining: u32,
@@ -157,14 +254,16 @@ struct Palette {
     light: bool,
     ink: u32,
     muted: u32,
-    button: u32,
-    button_hover: u32,
-    button_text: u32,
     soft: u32,
+    depth: [u8; 4],
     plate: [u8; 4],
-    tile: [u8; 4],
-    inset: [u8; 4],
+    card: [u8; 4],
+    edge: [u8; 4],
+    hot: [u8; 4],
+    hover: [u8; 4],
     track: [u8; 4],
+    line: [u8; 4],
+    charge: [u8; 3],
 }
 
 static VIEW: Mutex<View> = Mutex::new(View::Loading);
@@ -177,14 +276,190 @@ static PRESSED: AtomicU8 = AtomicU8::new(0);
 static TRACKING: AtomicBool = AtomicBool::new(false);
 static WAKE: OnceLock<Sender<()>> = OnceLock::new();
 static DELTA: Mutex<String> = Mutex::new(String::new());
-static MOTION: Mutex<Motion> = Mutex::new(Motion { tick: MOTION_FRAMES, live: false });
-static COUNT: Mutex<CountUp> = Mutex::new(CountUp { from: 0, to: -1, tick: COUNT_FRAMES });
+static LAST: Mutex<Option<Snapshot>> = Mutex::new(None);
+static NOTICE: Mutex<String> = Mutex::new(String::new());
+static CHECKING: AtomicBool = AtomicBool::new(false);
+static CHECK_GEN: AtomicU64 = AtomicU64::new(0);
+static FRESH_AT: AtomicI64 = AtomicI64::new(0);
+static LAST_KIND: AtomicU8 = AtomicU8::new(0);
+static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
+static DETAIL_OPEN: AtomicBool = AtomicBool::new(false);
+static SCROLL_Y: AtomicI32 = AtomicI32::new(0);
+static ISOLATED: AtomicBool = AtomicBool::new(false);
+static PROFILE_OVERRIDE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+static CONFIG: Mutex<Option<crate::settings::Settings>> = Mutex::new(None);
+static LAST_SIG: Mutex<String> = Mutex::new(String::new());
+static DISTROS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+struct SettingRow {
+    spot: Spot,
+    id: u8,
+    label: String,
+    value: String,
+}
+static TRUST_SEEN: AtomicBool = AtomicBool::new(false);
+static TRUST_LOADED: AtomicBool = AtomicBool::new(false);
+static MOTION: Mutex<Motion> = Mutex::new(Motion {
+    tick: MOTION_FRAMES,
+    live: false,
+});
+static COUNT: Mutex<CountUp> = Mutex::new(CountUp {
+    from: 0,
+    to: -1,
+    tick: COUNT_FRAMES,
+});
 static SHOWN: AtomicI32 = AtomicI32::new(-1);
 
-pub fn run() {
+/// Refuse a preview folder that resolves onto the installed profile, before any directory is created.
+fn guarded_preview_dir(raw: &std::path::Path) -> Result<std::path::PathBuf, PreviewFailure> {
+    let named = match win32_full_path(raw) {
+        Some(path) => path,
+        None => crate::settings::windows_absolute(raw)
+            .ok_or(PreviewFailure::new(21, "resolve absolute preview path"))?,
+    };
+    if !crate::settings::isolates_from_product(std::path::Path::new(&named)) {
+        return Err(PreviewFailure::new(
+            22,
+            "reject installed-profile preview path",
+        ));
+    }
+    let resolved = resolve_reparse(&named, 23, "resolve preview path reparse points")?;
+    if !crate::settings::isolates_from_product(std::path::Path::new(&resolved)) {
+        return Err(PreviewFailure::new(
+            22,
+            "reject installed-profile preview path",
+        ));
+    }
+    let product = installed_product_dir()?;
+    if crate::settings::path_is_within(&resolved, &product.to_string_lossy()) {
+        return Err(PreviewFailure::new(
+            22,
+            "reject installed-profile preview path",
+        ));
+    }
+    Ok(std::path::PathBuf::from(resolved))
+}
+
+fn installed_product_dir() -> Result<std::path::PathBuf, PreviewFailure> {
+    let local = std::env::var("LOCALAPPDATA")
+        .map_err(|_| PreviewFailure::new(24, "read isolated profile root"))?;
+    let product = crate::settings::profile_dir(std::path::Path::new(&local), false);
+    let named = win32_full_path(&product).unwrap_or_else(|| product.to_string_lossy().into_owned());
+    let resolved = resolve_reparse(&named, 24, "resolve isolated profile root")?;
+    Ok(std::path::PathBuf::from(resolved))
+}
+
+fn win32_full_path(path: &std::path::Path) -> Option<String> {
+    let wide_path = wide(&path.to_string_lossy());
+    let mut buffer = vec![0u16; 1024];
+    let written = unsafe {
+        GetFullPathNameW(
+            wide_path.as_ptr(),
+            buffer.len() as u32,
+            buffer.as_mut_ptr(),
+            std::ptr::null_mut(),
+        )
+    };
+    if written == 0 || written as usize >= buffer.len() {
+        return None;
+    }
+    let text = String::from_utf16_lossy(&buffer[..written as usize]);
+    crate::settings::windows_absolute(std::path::Path::new(&text))
+}
+
+fn resolve_reparse(
+    absolute: &str,
+    error_code: i32,
+    stage: &'static str,
+) -> Result<String, PreviewFailure> {
+    let absolute = crate::settings::windows_absolute(std::path::Path::new(absolute))
+        .ok_or(PreviewFailure::new(error_code, stage))?;
+    let mut cursor = std::path::PathBuf::from(&absolute);
+    let mut missing = Vec::new();
+    while !cursor.exists() {
+        let name = cursor
+            .file_name()
+            .ok_or(PreviewFailure::new(error_code, stage))?
+            .to_os_string();
+        if !cursor.pop() || cursor.as_os_str().is_empty() {
+            return Ok(absolute);
+        }
+        missing.push(name);
+    }
+    let mut resolved = final_path_of(&cursor).ok_or(PreviewFailure::new(error_code, stage))?;
+    for name in missing.iter().rev() {
+        if !resolved.ends_with('\\') {
+            resolved.push('\\');
+        }
+        resolved.push_str(&name.to_string_lossy());
+    }
+    crate::settings::windows_absolute(std::path::Path::new(&resolved))
+        .ok_or(PreviewFailure::new(error_code, stage))
+}
+
+fn final_path_of(path: &std::path::Path) -> Option<String> {
+    let wide_path = wide(&path.to_string_lossy());
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut buffer = vec![0u16; 1024];
+    let written = unsafe {
+        GetFinalPathNameByHandleW(
+            handle,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            VOLUME_NAME_DOS,
+        )
+    };
+    unsafe {
+        CloseHandle(handle);
+    }
+    if written == 0 || written as usize >= buffer.len() {
+        return None;
+    }
+    let text = String::from_utf16_lossy(&buffer[..written as usize]);
+    crate::settings::windows_absolute(std::path::Path::new(&text))
+}
+
+pub fn run() -> Result<(), PreviewFailure> {
+    let launch = crate::settings::parse_launch(std::env::args().skip(1));
+    let preview = match launch.preview_dir.as_ref() {
+        Some(dir) => Some(guarded_preview_dir(dir)?),
+        None if launch.preview_missing => {
+            return Err(PreviewFailure::new(20, "read preview output argument"));
+        }
+        None => None,
+    };
+    ISOLATED.store(launch.isolated, Ordering::SeqCst);
+    if let Some(dir) = preview {
+        std::fs::create_dir_all(&dir)
+            .map_err(|_| PreviewFailure::new(25, "create preview output directory"))?;
+        let dir = guarded_preview_dir(&dir)?;
+        *PROFILE_OVERRIDE
+            .lock()
+            .map_err(|_| PreviewFailure::new(26, "configure isolated preview profile"))? =
+            Some(dir.clone());
+        unsafe { render_previews(&dir)? };
+        return Ok(());
+    }
+    let guard = crate::settings::startup_guard(launch.isolated);
+    if guard.copy_home {
+        settle_home();
+    }
     unsafe {
         let _ = set_process_dpi();
-        let class_name = wide("JusageWindow");
+        let class_name = wide(guard.window_class);
         let title = wide("Jusage");
         let instance = GetModuleHandleW(std::ptr::null());
         let class = WNDCLASSW {
@@ -200,20 +475,26 @@ pub fn run() {
             lpszClassName: class_name.as_ptr(),
         };
         if RegisterClassW(&class) == 0 {
-            return;
+            return Ok(());
         }
-        let mutex_name = wide("Local\\JusageSingle");
+        let mutex_name = wide(guard.mutex);
         let mutex = CreateMutexW(std::ptr::null(), FALSE, mutex_name.as_ptr());
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let existing = FindWindowW(class_name.as_ptr(), std::ptr::null());
             if !existing.is_null() {
                 let _ = PostMessageW(existing, SHOW_MSG, 0, 0);
             }
-            return;
+            return Ok(());
         }
         let _ = mutex;
 
-        let card = card_for(&View::Loading, screen_dpi());
+        let dpi = screen_dpi();
+        let initial_work = work_area();
+        let card = card_for(
+            &View::Loading,
+            dpi,
+            initial_work.bottom - initial_work.top - scale(16, dpi),
+        );
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW,
             class_name.as_ptr(),
@@ -229,7 +510,7 @@ pub fn run() {
             std::ptr::null(),
         );
         if hwnd.is_null() {
-            return;
+            return Ok(());
         }
         HWND_SLOT.store(hwnd as usize, Ordering::SeqCst);
         let pref = DWMWCP_ROUND;
@@ -240,15 +521,27 @@ pub fn run() {
             4,
         );
         enable_glass(hwnd);
-        let icon = make_icon(icon_px(), 0, usage::mood_rgb_on(None, system_is_light()), false);
+        let icon = make_icon(
+            icon_px(),
+            0,
+            usage::mood_rgb_on(None, system_is_light()),
+            false,
+        );
         ICON_SLOT.store(icon as usize, Ordering::SeqCst);
+        assign_window_icon(hwnd, icon);
         add_tray(hwnd, icon, "Jusage 확인 중");
+        if guard.touch_registry {
+            boot_autostart();
+        } else {
+            let _ = ensure_config();
+        }
         apply_view();
-        remember_login();
         let (tx, rx) = mpsc::channel();
         let _ = WAKE.set(tx);
         std::thread::spawn(move || worker(rx));
-        std::thread::spawn(promote_loop);
+        if guard.touch_registry {
+            std::thread::spawn(promote_loop);
+        }
 
         let mut msg = windows_sys::Win32::UI::WindowsAndMessaging::MSG::default();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
@@ -257,56 +550,233 @@ pub fn run() {
         }
         remove_tray(hwnd);
     }
+    Ok(())
+}
+
+struct ResetWatch {
+    at: Option<i64>,
+    remaining: Option<u32>,
+    late_tries: u8,
 }
 
 fn worker(rx: mpsc::Receiver<()>) {
-    let home = usage::codex_home();
-    publish(home.as_path());
-    let mut seen = usage::newest_activity(&home);
+    let mut watch = ResetWatch {
+        at: None,
+        remaining: None,
+        late_tries: 0,
+    };
+    let mut seen = current_activity();
     let mut due: Option<Instant> = None;
+    let mut next_idle = Instant::now();
+    let mut idle_fails = 0u32;
+    let mut started = false;
     loop {
         if QUIT_FLAG.load(Ordering::Relaxed) {
             break;
         }
-        let wait = due
-            .map(|moment| moment.saturating_duration_since(Instant::now()))
-            .unwrap_or(Duration::from_secs(20));
+        if !started {
+            started = true;
+            let fetched = publish();
+            watch = watch_after(fetched, None, 0);
+            next_idle = Instant::now() + idle_gap(&mut idle_fails);
+            seen = current_activity();
+            continue;
+        }
+        let wait = wait_budget(due, watch.at, next_idle);
         let woke = rx.recv_timeout(wait).is_ok();
         if woke {
             due = None;
-            publish(home.as_path());
-            seen = usage::newest_activity(&home);
+            let fetched = publish();
+            while rx.try_recv().is_ok() {}
+            if fetched.is_some() {
+                watch = watch_after(fetched, None, 0);
+            }
+            next_idle = Instant::now() + idle_gap(&mut idle_fails);
+            seen = current_activity();
             continue;
         }
-        let current = usage::newest_activity(&home);
+        let current = current_activity();
         if current > seen {
             seen = current;
-            due = Some(Instant::now() + Duration::from_secs(90));
+            due = Some(Instant::now() + Duration::from_secs(15));
         }
-        if due.is_some_and(|moment| Instant::now() >= moment) {
+        if watch.at.is_some_and(|at| now_unix() >= at) {
+            let previous = watch.remaining;
+            let tries = watch.late_tries;
+            let fetched = publish();
+            if fetched.is_none() {
+                let late_tries = tries.saturating_add(1);
+                watch.late_tries = if late_tries >= 5 { 0 } else { late_tries };
+                watch.at = if late_tries >= 5 {
+                    None
+                } else {
+                    Some(now_unix().saturating_add(15))
+                };
+            } else {
+                watch = watch_after(fetched, previous, tries);
+            }
+            next_idle = Instant::now() + idle_gap(&mut idle_fails);
+            continue;
+        }
+        if due.is_some_and(|moment| Instant::now() >= moment) || next_idle <= Instant::now() {
             due = None;
-            publish(home.as_path());
+            let fetched = publish();
+            if fetched.is_some() {
+                watch = watch_after(fetched, watch.remaining, 0);
+            }
+            next_idle = Instant::now() + idle_gap(&mut idle_fails);
         }
     }
 }
 
-fn publish(home: &std::path::Path) {
-    let next = match usage::fetch_usage(home) {
-        Ok(snapshot) => {
-            note_change(&snapshot);
-            View::Ready(snapshot)
+fn idle_gap(fails: &mut u32) -> Duration {
+    let kind = LAST_KIND.load(Ordering::Relaxed);
+    if kind == 0 {
+        *fails = 0;
+        return Duration::from_secs(60);
+    }
+    if kind == 1 {
+        *fails = 0;
+        return Duration::from_secs(180);
+    }
+    *fails = fails.saturating_add(1);
+    Duration::from_secs(crate::settings::idle_backoff(*fails))
+}
+
+fn current_activity() -> Option<std::time::SystemTime> {
+    let Ok(home) = current_home() else {
+        return None;
+    };
+    usage::newest_activity(&home)
+}
+
+fn wait_budget(due: Option<Instant>, reset_at: Option<i64>, idle_at: Instant) -> Duration {
+    let activity = due
+        .map(|moment| moment.saturating_duration_since(Instant::now()))
+        .unwrap_or(Duration::from_secs(20));
+    let mut wait = activity.min(Duration::from_secs(20));
+    wait = wait.min(idle_at.saturating_duration_since(Instant::now()));
+    if let Some(at) = reset_at {
+        let now = now_unix();
+        if at <= now {
+            return Duration::from_secs(0);
         }
-        Err(FetchFail::NoLogin) => {
-            clear_delta();
-            View::NeedLogin
-        }
-        Err(fail) => {
-            clear_delta();
-            View::Failed(fail.code())
+        wait = wait.min(Duration::from_secs((at - now) as u64));
+    }
+    wait
+}
+
+fn watch_after(snapshot: Option<Snapshot>, previous: Option<u32>, late_tries: u8) -> ResetWatch {
+    let Some(snapshot) = snapshot else {
+        return ResetWatch {
+            at: None,
+            remaining: previous,
+            late_tries: 0,
+        };
+    };
+    let remaining = shown_focus(&snapshot).remaining;
+    let now = now_unix();
+    let (at, late_tries) = usage::next_reset_watch(
+        now,
+        usage::soonest_reset(&snapshot, now),
+        remaining,
+        previous,
+        late_tries,
+    );
+    ResetWatch {
+        at,
+        remaining: Some(remaining),
+        late_tries,
+    }
+}
+
+fn publish() -> Option<Snapshot> {
+    let started = CHECK_GEN.load(Ordering::Relaxed);
+    let home = match current_home() {
+        Ok(path) => path,
+        Err(message) => {
+            note_home_problem(message);
+            LAST_KIND.store(3, Ordering::Relaxed);
+            finish_publish(started);
+            return None;
         }
     };
-    if let Ok(mut view) = VIEW.lock() {
-        *view = next;
+    let signature = source_signature();
+    let switched = LAST_SIG.lock().ok().is_some_and(|have| *have != signature);
+    if switched {
+        if let Ok(mut last) = LAST.lock() {
+            *last = None;
+        }
+    }
+    let had_number = LAST.lock().ok().is_some_and(|slot| slot.is_some());
+    let (kind, snapshot, code) = match usage::fetch_usage(&home) {
+        Ok(snapshot) => (usage::FetchKind::Ok, Some(snapshot), 0),
+        Err(FetchFail::NoLogin) => (usage::FetchKind::NoLogin, None, 0),
+        Err(fail) => (usage::FetchKind::Failed, None, fail.code()),
+    };
+    let returned = match usage::after_fetch(had_number, kind) {
+        usage::AfterFetch::Ready => {
+            let snapshot = snapshot?;
+            note_change(&snapshot);
+            if let Ok(mut last) = LAST.lock() {
+                *last = Some(snapshot.clone());
+            }
+            clear_notice();
+            FRESH_AT.store(now_unix(), Ordering::Relaxed);
+            LAST_KIND.store(0, Ordering::Relaxed);
+            if let Ok(mut sig) = LAST_SIG.lock() {
+                *sig = signature;
+            }
+            if let Ok(mut view) = VIEW.lock() {
+                *view = View::Ready(snapshot.clone());
+            }
+            Some(snapshot)
+        }
+        usage::AfterFetch::NeedLogin => {
+            clear_delta();
+            if let Ok(mut last) = LAST.lock() {
+                *last = None;
+            }
+            clear_notice();
+            LAST_KIND.store(1, Ordering::Relaxed);
+            if let Ok(mut view) = VIEW.lock() {
+                *view = View::NeedLogin;
+            }
+            None
+        }
+        usage::AfterFetch::KeepLast => {
+            LAST_KIND.store(2, Ordering::Relaxed);
+            if let Ok(mut notice) = NOTICE.lock() {
+                *notice = crate::settings::fail_note(code).to_string();
+            }
+            if let Ok(last) = LAST.lock() {
+                if let Some(snapshot) = last.clone() {
+                    if let Ok(mut view) = VIEW.lock() {
+                        *view = View::Ready(snapshot);
+                    }
+                }
+            }
+            None
+        }
+        usage::AfterFetch::FirstFail => {
+            clear_delta();
+            LAST_KIND.store(2, Ordering::Relaxed);
+            if let Ok(mut notice) = NOTICE.lock() {
+                *notice = crate::settings::fail_note(code).to_string();
+            }
+            if let Ok(mut view) = VIEW.lock() {
+                *view = View::Failed(code);
+            }
+            None
+        }
+    };
+    finish_publish(started);
+    returned
+}
+
+fn finish_publish(started: u64) {
+    if CHECK_GEN.load(Ordering::Relaxed) == started {
+        CHECKING.store(false, Ordering::Relaxed);
     }
     let hwnd = HWND_SLOT.load(Ordering::SeqCst) as HWND;
     if !hwnd.is_null() {
@@ -316,15 +786,47 @@ fn publish(home: &std::path::Path) {
     }
 }
 
-fn request_refresh() {
-    let Ok(mut view) = VIEW.lock() else {
-        return;
-    };
-    if matches!(*view, View::Loading) {
+fn note_home_problem(message: &str) {
+    let had_number = LAST.lock().ok().is_some_and(|slot| slot.is_some());
+    if let Ok(mut notice) = NOTICE.lock() {
+        *notice = message.to_string();
+    }
+    if had_number {
+        if let Ok(last) = LAST.lock() {
+            if let Some(snapshot) = last.clone() {
+                if let Ok(mut view) = VIEW.lock() {
+                    *view = View::Ready(snapshot);
+                }
+            }
+        }
         return;
     }
-    *view = View::Loading;
-    drop(view);
+    clear_delta();
+    if let Ok(mut view) = VIEW.lock() {
+        *view = View::Failed(1);
+    }
+}
+
+fn clear_notice() {
+    if let Ok(mut notice) = NOTICE.lock() {
+        notice.clear();
+    }
+}
+
+fn request_refresh() {
+    let had_number = LAST.lock().ok().is_some_and(|slot| slot.is_some());
+    if usage::manual_refresh_keeps_number(had_number) {
+        CHECK_GEN.fetch_add(1, Ordering::Relaxed);
+        CHECKING.store(true, Ordering::Relaxed);
+    } else {
+        let Ok(mut view) = VIEW.lock() else {
+            return;
+        };
+        if matches!(*view, View::Loading) {
+            return;
+        }
+        *view = View::Loading;
+    }
     if let Some(tx) = WAKE.get() {
         let _ = tx.send(());
     }
@@ -346,13 +848,14 @@ unsafe fn apply_view() {
     let icon = make_icon(icon_px(), remaining, rgb, show_number);
     if !hwnd.is_null() {
         update_tray(hwnd, icon, &tip);
+        assign_window_icon(hwnd, icon);
     }
     let old = ICON_SLOT.swap(icon as usize, Ordering::SeqCst) as HICON;
     if !old.is_null() && old != icon {
         DestroyIcon(old);
     }
     let focus_name = match &view {
-        View::Ready(snapshot) => usage::focus_reading(snapshot).name.to_string(),
+        View::Ready(snapshot) => shown_focus(snapshot).name.to_string(),
         _ => String::new(),
     };
     let week_left = match &view {
@@ -374,8 +877,18 @@ unsafe fn apply_view() {
     }
 }
 
-fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, String, Option<u16>) {
-    let light = system_is_light();
+fn describe(
+    view: &View,
+) -> (
+    String,
+    u32,
+    [u8; 3],
+    &'static str,
+    Option<u32>,
+    String,
+    Option<u16>,
+) {
+    let light = theme_is_light();
     match view {
         View::Loading => (
             "Jusage 확인 중".into(),
@@ -405,9 +918,15 @@ fn describe(view: &View) -> (String, u32, [u8; 3], &'static str, Option<u32>, St
             Some(*code),
         ),
         View::Ready(snapshot) => {
-            let focus = usage::focus_reading(snapshot);
+            let focus = shown_focus(snapshot);
+            let now = now_unix();
+            let pane_key = match focus.pane {
+                Pane::Session => "session",
+                Pane::Week => "week",
+            };
+            let brief = usage::pace_brief(&pace_for(pane_key), now, focus.remaining);
             (
-                usage::hover_tip(snapshot),
+                usage::tray_tip(&usage::hover_tip(snapshot), &brief),
                 focus.remaining,
                 usage::mood_rgb_on(Some(focus.remaining), light),
                 "ready",
@@ -479,19 +998,29 @@ fn local_civil(unix: i64) -> Option<Civil> {
     })
 }
 
-fn card_for(view: &View, dpi: i32) -> Card {
+fn card_for(view: &View, dpi: i32, max_height: i32) -> Card {
+    if SETTINGS_OPEN.load(Ordering::Relaxed) {
+        return fit_popup(settings_card(dpi), dpi, max_height);
+    }
     let s = |value: i32| scale(value, dpi);
     let mut tiles = Vec::new();
     let hero;
     let mut scope = String::new();
     let mut refill = String::new();
+    let mut charge = String::new();
+    let mut charge_fill = None;
     let mut note = String::new();
     let mut delta = String::new();
+    let mut fact_rows: Vec<(String, String)> = Vec::new();
+    let mut pace_lines: Vec<String> = Vec::new();
+    let mut cycle = String::new();
+    let mut day_slots: Vec<usage::DaySlot> = Vec::new();
     let mut plan = String::new();
+    let mut status = String::new();
+    let mut detail_hint = String::new();
     let mut hero_big = false;
     let mut remaining = 0u32;
-    let mut show_bar = false;
-    let light = system_is_light();
+    let light = theme_is_light();
     match view {
         View::Loading => hero = "확인 중".to_string(),
         View::NeedLogin => {
@@ -500,160 +1029,1012 @@ fn card_for(view: &View, dpi: i32) -> Card {
         }
         View::Failed(_) => {
             hero = "확인하지 못했어요".to_string();
-            note = "잠시 뒤 다시 확인해 주세요.".to_string();
+            note = NOTICE
+                .lock()
+                .ok()
+                .filter(|notice| !notice.is_empty())
+                .map(|notice| notice.clone())
+                .unwrap_or_else(|| "잠시 뒤 다시 확인해 주세요.".to_string());
         }
         View::Ready(snapshot) => {
             let (session, week) = usage::readings(snapshot);
-            let focus = usage::focus_reading(snapshot);
+            let focus = shown_focus(snapshot);
             remaining = focus.remaining;
             hero = format!("{}%", focus.remaining);
             hero_big = true;
-            show_bar = true;
             scope = focus.name.to_string();
             plan = snapshot.plan.clone();
             let now = now_unix();
+            let window_secs = match focus.pane {
+                Pane::Session => snapshot.session_window_seconds,
+                Pane::Week => snapshot.weekly_window_seconds,
+            };
             if let Some(at) = reset_unix(focus.reset_at, focus.reset_after, now) {
-                if let (Some(today), Some(moment)) = (local_civil(now), local_civil(at)) {
-                    refill = usage::named_refill(focus.name, &usage::refill_phrase(today, moment));
+                if let Some(state) = usage::charge_state(now, at, window_secs) {
+                    charge = state.phrase;
+                    charge_fill = state.fraction;
+                    if state.seconds_left > 0 {
+                        if let (Some(today), Some(moment)) = (local_civil(now), local_civil(at)) {
+                            refill = crate::settings::tile_clock(&usage::clock_when(today, moment));
+                        }
+                    }
                 }
             }
             if let Some(line) = DELTA.lock().ok() {
                 delta = line.clone();
             }
+            fact_rows.push((
+                "쓴 양".into(),
+                format!("{}%", 100u32.saturating_sub(focus.remaining)),
+            ));
+            let pane_key = match focus.pane {
+                Pane::Session => "session",
+                Pane::Week => "week",
+            };
+            let today_key = local_civil(now)
+                .map(|time| format!("{:04}-{:02}-{:02}", time.year, time.month, time.day))
+                .unwrap_or_default();
+            if !today_key.is_empty() {
+                if let Some(time) = local_civil(now) {
+                    day_slots =
+                        usage::recent_days(&read_days(), pane_key, time.year, time.month, time.day)
+                            .to_vec();
+                }
+            }
+            if let Some(mark) = read_day() {
+                if mark.day == today_key && mark.pane == pane_key {
+                    fact_rows.push((
+                        "오늘".into(),
+                        usage::account_move_value(mark.open, focus.remaining),
+                    ));
+                }
+            }
+            if let Some(low) = day_slots
+                .iter()
+                .find(|slot| slot.today)
+                .and_then(|slot| slot.low)
+            {
+                fact_rows.push(("오늘 최저".into(), format!("{low}%")));
+                if let Some(up) = usage::lifted_since_low(low, focus.remaining) {
+                    fact_rows.push(("최저 이후".into(), up));
+                }
+            }
+            if let Some(close) = usage::yesterday_close(&day_slots) {
+                fact_rows.push(("어제".into(), format!("{close}%로 마감")));
+            }
+            if let Some((name, low)) = usage::earlier_low(&day_slots) {
+                fact_rows.push(("기록 최저".into(), format!("{name} {low}%")));
+            }
+            if let Some(value) = usage::average_day_value(&day_slots) {
+                fact_rows.push(("하루 평균".into(), value));
+            }
+            let reset_at = reset_unix(focus.reset_at, focus.reset_after, now);
+            let pace_samples = pace_for(pane_key);
+            detail_hint = usage::pace_brief(&pace_samples, now, focus.remaining);
+            pace_lines.push(usage::pace_line(
+                &pace_samples,
+                now,
+                focus.remaining,
+                reset_at,
+            ));
+            if let (Some(window), Some(at)) = (window_secs, reset_at) {
+                if let Some(line) =
+                    usage::window_balance(window, at.saturating_sub(now), focus.remaining)
+                {
+                    pace_lines.push(line);
+                }
+            }
+            if let Some(line) = usage::refill_guess(&pace_samples, now, focus.remaining, reset_at) {
+                pace_lines.push(line);
+            }
+            if let Some(shift) = usage::pace_shift(&pace_samples, now, focus.remaining) {
+                pace_lines.push(shift);
+            }
+            cycle = usage::cycle_line(&read_cycle(), pane_key, focus.remaining);
+            if !delta.is_empty() {
+                fact_rows.push(("지난 확인".into(), delta.clone()));
+            }
             if let Some(week) = week {
-                let mut session_tile = tile_from(session, light);
-                let mut week_tile = tile_from(week, light);
+                let mut session_tile = tile_from(session, light, reset_clock(session, now));
+                let mut week_tile = tile_from(week, light, reset_clock(week, now));
                 session_tile.hot = focus.pane == Pane::Session;
                 week_tile.hot = focus.pane == Pane::Week;
                 tiles.push(session_tile);
                 tiles.push(week_tile);
             }
+            if CHECKING.load(Ordering::Relaxed) {
+                note = usage::CHECKING_NOTE.to_string();
+            } else if let Ok(notice) = NOTICE.lock() {
+                if !notice.is_empty() {
+                    note = notice.clone();
+                }
+            }
+            let fresh_at = FRESH_AT.load(Ordering::Relaxed);
+            if fresh_at > 0 {
+                let age = now.saturating_sub(fresh_at);
+                status = format!(
+                    "{} · {}",
+                    crate::settings::source_label(config().source),
+                    crate::settings::fresh_line(age)
+                );
+            }
         }
     }
+    let pace = pace_lines.join("\n");
+    let show_charge = charge_fill.is_some();
+    let charge_fill = charge_fill.unwrap_or(0.0);
     let width = s(CARD_W);
-    let pad = s(22);
+    let pad = s(32);
     let close_size = s(40);
     let close = Spot {
-        x: width - close_size - s(8),
-        y: s(8),
+        x: width - close_size - s(16),
+        y: s(14),
         w: close_size,
         h: close_size,
     };
-    let brand_box = Spot { x: pad, y: s(8), w: s(210), h: close_size };
-    let plan_box = Spot {
-        x: brand_box.x + brand_box.w,
-        y: s(8),
-        w: close.x - brand_box.x - brand_box.w - s(8),
+    let gear = Spot {
+        x: close.x - s(8) - s(72),
+        y: close.y,
+        w: s(72),
         h: close_size,
     };
-    let mut y = s(58);
-    let hero_box = Spot {
+    let brand_box = Spot {
         x: pad,
-        y,
-        w: width - pad * 2,
-        h: if hero_big { s(58) } else { s(36) },
+        y: s(22),
+        w: s(150),
+        h: s(16),
     };
-    y += hero_box.h;
-    let scope_box = if scope.is_empty() {
+    let plan_box = Spot {
+        x: pad + s(150),
+        y: s(22),
+        w: (gear.x - pad - s(150) - s(8)).max(s(48)),
+        h: s(16),
+    };
+    let content_x = pad + s(16);
+    let content_w = width - pad - content_x;
+    let rule_h = s(1).max(2);
+    let trust = if trust_seen() {
+        String::new()
+    } else {
+        usage::TRUST_LINE.to_string()
+    };
+    let trust_box = if trust.is_empty() {
         None
     } else {
-        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(20) };
-        y += spot.h;
-        Some(spot)
+        Some(Spot {
+            x: content_x,
+            y: s(60),
+            w: content_w,
+            h: s(44),
+        })
     };
-    let bar = if show_bar {
-        y += s(12);
-        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(8).max(6) };
-        y += spot.h;
-        Some(spot)
+    let mut y = trust_box
+        .as_ref()
+        .map(|spot| spot.y + spot.h + s(8))
+        .unwrap_or(s(72));
+    let scope_box;
+    let rail;
+    let mood_box;
+    let bar;
+    let hero_box;
+    if hero_big {
+        scope_box = Some(Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: s(16),
+        });
+        y += s(16) + s(2);
+        let number_h = s(72);
+        let mood_w = s(88);
+        hero_box = Spot {
+            x: content_x,
+            y,
+            w: content_w - mood_w,
+            h: number_h,
+        };
+        mood_box = Some(Spot {
+            x: content_x + content_w - mood_w,
+            y,
+            w: mood_w,
+            h: number_h,
+        });
+        rail = Some(Spot {
+            x: pad,
+            y: y + s(8),
+            w: s(3).max(3),
+            h: number_h - s(16),
+        });
+        y += number_h + s(12);
+        bar = Some(Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: s(11),
+        });
+        y += s(11) + s(12);
     } else {
-        None
-    };
-    let refill_box = if refill.is_empty() {
-        None
-    } else {
-        y += s(10);
-        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(22) };
-        y += spot.h;
-        Some(spot)
-    };
+        hero_box = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: s(36),
+        };
+        y += hero_box.h + s(8);
+        scope_box = None;
+        rail = None;
+        mood_box = None;
+        bar = None;
+    }
     let note_box = if note.is_empty() {
         None
     } else {
-        y += s(8);
-        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(22) };
-        y += spot.h;
+        let lines = wrapped_line_count(&note, content_w, s(15));
+        let spot = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: lines * s(22) + s(4),
+        };
+        y += spot.h + s(8);
         Some(spot)
     };
+    let top_rule = None;
     if !tiles.is_empty() {
-        y += s(16);
         let gap = s(10);
-        let tile_w = (width - pad * 2 - gap) / tiles.len() as i32;
-        let tile_h = s(86);
+        let tile_w = (content_w - gap) / tiles.len() as i32;
+        let tile_h = s(144);
         for (index, tile) in tiles.iter_mut().enumerate() {
             tile.spot = Spot {
-                x: pad + (tile_w + gap) * index as i32,
+                x: content_x + (tile_w + gap) * index as i32,
                 y,
                 w: tile_w,
                 h: tile_h,
             };
         }
-        y += tile_h;
+        y += tile_h + s(10);
     }
-    let delta_box = if delta.is_empty() {
+    let has_charge = !charge.is_empty() || !refill.is_empty();
+    let charge_box;
+    let charge_bar;
+    let refill_box;
+    if !has_charge {
+        charge_box = None;
+        charge_bar = None;
+        refill_box = None;
+    } else {
+        let row_h = s(24);
+        charge_box = if charge.is_empty() {
+            None
+        } else {
+            let spot = Spot {
+                x: content_x,
+                y,
+                w: content_w,
+                h: row_h,
+            };
+            y += row_h + s(2);
+            Some(spot)
+        };
+        refill_box = if refill.is_empty() {
+            None
+        } else {
+            let spot = Spot {
+                x: content_x,
+                y,
+                w: content_w,
+                h: if refill.contains('\n') { s(36) } else { s(22) },
+            };
+            y += spot.h + s(8);
+            Some(spot)
+        };
+        charge_bar = if show_charge {
+            let spot = Spot {
+                x: content_x,
+                y,
+                w: content_w,
+                h: s(11),
+            };
+            y += spot.h;
+            Some(spot)
+        } else {
+            None
+        };
+        y += s(10);
+    }
+    let status_box = if status.is_empty() {
         None
     } else {
-        y += s(12);
-        let spot = Spot { x: pad, y, w: width - pad * 2, h: s(20) };
-        y += spot.h;
+        let spot = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: s(22),
+        };
+        y += spot.h + s(8);
         Some(spot)
     };
-    y += s(18);
-    let button_w = s(176).min(width - pad * 2);
+    let fold = crate::settings::popup_fold(DETAIL_OPEN.load(Ordering::Relaxed));
+    if fold.pace || fold.ledger || fold.days {
+        y += s(8);
+    }
+    let pace_caption_box;
+    let pace_box;
+    if !fold.pace || pace.is_empty() {
+        pace_caption_box = None;
+        pace_box = None;
+    } else {
+        let caption = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: s(16),
+        };
+        y += caption.h + s(4);
+        let lines = wrapped_line_count(&pace, content_w, s(15));
+        let body = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: lines * s(22) + s(4),
+        };
+        y += body.h + s(8);
+        pace_caption_box = Some(caption);
+        pace_box = Some(body);
+    }
+    let cycle_box = if !fold.pace || cycle.is_empty() {
+        None
+    } else {
+        let lines = wrapped_line_count(&cycle, content_w, s(15));
+        let spot = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: lines * s(22) + s(4),
+        };
+        y += spot.h + s(6);
+        Some(spot)
+    };
+    let mut facts = Vec::new();
+    let ledger_label = if !fold.ledger || fact_rows.is_empty() {
+        None
+    } else {
+        let spot = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: s(18),
+        };
+        y += spot.h + s(4);
+        Some(spot)
+    };
+    if fold.ledger {
+        for (name, text) in fact_rows {
+            let label_w = content_w * 30 / 100;
+            let row_h = s(28);
+            facts.push(Fact {
+                label: Spot {
+                    x: content_x,
+                    y,
+                    w: label_w,
+                    h: row_h,
+                },
+                value: Spot {
+                    x: content_x + label_w,
+                    y,
+                    w: content_w - label_w,
+                    h: row_h,
+                },
+                name,
+                text,
+            });
+            y += row_h + s(4);
+        }
+    }
+    if !facts.is_empty() {
+        y += s(8);
+    }
+    let days_rule;
+    let days_label;
+    let days_open_label;
+    let days_close_label;
+    let mut days = Vec::new();
+    let has_day_history = day_slots.iter().any(|slot| slot.open.is_some());
+    if day_slots.is_empty() || !fold.days {
+        days_rule = None;
+        days_label = None;
+        days_open_label = None;
+        days_close_label = None;
+    } else {
+        let spot = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: rule_h,
+        };
+        y += rule_h + s(8);
+        days_rule = Some(spot);
+        let label = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: s(18),
+        };
+        y += label.h + s(4);
+        days_label = Some(label);
+        let gap = s(4);
+        let side = s(36);
+        let col_w = (content_w - side - gap * 7) / 7;
+        let x0 = content_x + side + gap;
+        let name_h = s(16);
+        let num_h = s(18);
+        let open_y = y + name_h + s(4);
+        let close_y = open_y + num_h;
+        days_open_label = has_day_history.then_some(Spot {
+            x: content_x,
+            y: open_y,
+            w: side,
+            h: num_h,
+        });
+        days_close_label = has_day_history.then_some(Spot {
+            x: content_x,
+            y: close_y,
+            w: side,
+            h: num_h,
+        });
+        if has_day_history {
+            for (index, slot) in day_slots.iter().enumerate() {
+                let x = x0 + (col_w + gap) * index as i32;
+                let tick = if slot.today {
+                    Some(Spot {
+                        x: x + (col_w - s(12)) / 2,
+                        y: y + name_h,
+                        w: s(12),
+                        h: s(2).max(2),
+                    })
+                } else {
+                    None
+                };
+                days.push(DayCol {
+                    name_box: Spot {
+                        x,
+                        y,
+                        w: col_w,
+                        h: name_h,
+                    },
+                    open_box: Spot {
+                        x,
+                        y: open_y,
+                        w: col_w,
+                        h: num_h,
+                    },
+                    close_box: Spot {
+                        x,
+                        y: close_y,
+                        w: col_w,
+                        h: num_h,
+                    },
+                    tick,
+                    name: slot.name.to_string(),
+                    open: slot
+                        .open
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "·".to_string()),
+                    close: slot
+                        .close
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "·".to_string()),
+                    today: slot.today,
+                });
+            }
+            y = close_y + num_h + s(4);
+        }
+    }
+    let story = usage::week_story(&day_slots);
+    let story_box = if !fold.days || story.is_empty() {
+        None
+    } else {
+        let lines = wrapped_line_count(&story, content_w, s(15));
+        let spot = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: lines * s(22) + s(4),
+        };
+        y += spot.h + s(10);
+        Some(spot)
+    };
+    if fold.pace || fold.ledger || fold.days {
+        y += s(4);
+    }
+    let detail_open = DETAIL_OPEN.load(Ordering::Relaxed);
+    let (detail_box, detail_label, detail_hint) = if matches!(view, View::Ready(_)) {
+        let spot = Spot {
+            x: content_x,
+            y,
+            w: content_w,
+            h: s(44),
+        };
+        y += spot.h + s(8);
+        let label = if detail_open { "접기" } else { "자세히" };
+        let hint = if detail_open {
+            String::new()
+        } else {
+            detail_hint
+        };
+        (Some(spot), label.to_string(), hint)
+    } else {
+        (None, String::new(), String::new())
+    };
+    let bottom_rule = Some(Spot {
+        x: content_x,
+        y,
+        w: content_w,
+        h: rule_h,
+    });
+    y += rule_h + s(8);
+    let button_w = s(92);
     let refresh = Spot {
-        x: (width - button_w) / 2,
+        x: width - content_x - button_w,
         y,
         w: button_w,
-        h: s(42),
+        h: s(32),
     };
     y += refresh.h;
-    let quit = Spot { x: pad, y, w: width - pad * 2, h: s(36) };
+    let quit = Spot {
+        x: content_x,
+        y,
+        w: content_w,
+        h: s(32),
+    };
     y += quit.h + s(12);
-    Card {
+    let card = Card {
         width,
         height: y,
+        scroll_view: None,
+        scroll_offset: 0,
+        scroll_max: 0,
+        scroll_step: s(48),
         close,
+        gear,
         refresh,
         quit,
         brand_box,
         plan_box,
         hero_box,
         scope_box,
+        rail,
+        mood_box,
         bar,
+        charge_box,
+        charge_bar,
+        top_rule,
+        bottom_rule,
         refill_box,
         note_box,
-        delta_box,
+        trust_box,
+        ledger_label,
+        facts,
+        days_rule,
+        days_label,
+        days_open_label,
+        days_close_label,
+        days,
+        story_box,
+        story,
+        pace_caption_box,
+        pace_box,
+        pace,
+        cycle_box,
+        cycle,
+        detail_box,
+        detail_label,
+        detail_hint,
         tiles,
+        rows: Vec::new(),
+        status_box,
+        status,
         hero,
         scope,
         refill,
+        charge,
+        charge_fill,
         note,
-        delta,
+        trust,
         plan,
         hero_big,
         remaining,
+    };
+    fit_popup(card, dpi, max_height)
+}
+
+fn fit_popup(mut card: Card, dpi: i32, max_height: i32) -> Card {
+    let full_height = card.height;
+    let body_bottom = card
+        .detail_box
+        .map(|spot| spot.y)
+        .or_else(|| card.bottom_rule.map(|spot| spot.y))
+        .unwrap_or(full_height);
+    let body_top = card.close.y + card.close.h + scale(4, dpi);
+    let layout = crate::settings::popup_scroll_layout(
+        full_height,
+        max_height,
+        body_top,
+        body_bottom,
+        SCROLL_Y.load(Ordering::Relaxed),
+    );
+    SCROLL_Y.store(layout.offset, Ordering::Relaxed);
+    card.scroll_offset = layout.offset;
+    card.scroll_max = layout.max_offset;
+    card.scroll_step = scale(48, dpi).max(1);
+    if layout.height < full_height {
+        shift_body(&mut card, -layout.offset);
+        let footer_shift = layout.height - full_height;
+        shift_optional(&mut card.bottom_rule, footer_shift);
+        shift_optional(&mut card.detail_box, footer_shift);
+        card.refresh.y += footer_shift;
+        card.quit.y += footer_shift;
+        card.height = layout.height;
+        if layout.max_offset > 0 {
+            card.scroll_view = Some(Spot {
+                x: 0,
+                y: layout.top,
+                w: card.width,
+                h: layout.bottom - layout.top,
+            });
+        }
+    }
+    card
+}
+
+fn shift_optional(spot: &mut Option<Spot>, by: i32) {
+    if let Some(spot) = spot {
+        spot.y += by;
     }
 }
 
-fn tile_from(reading: Reading, light: bool) -> Tile {
+fn shift_body(card: &mut Card, by: i32) {
+    shift_optional(&mut card.scope_box, by);
+    shift_optional(&mut card.rail, by);
+    shift_optional(&mut card.mood_box, by);
+    shift_optional(&mut card.bar, by);
+    shift_optional(&mut card.charge_box, by);
+    shift_optional(&mut card.charge_bar, by);
+    shift_optional(&mut card.top_rule, by);
+    shift_optional(&mut card.refill_box, by);
+    shift_optional(&mut card.note_box, by);
+    shift_optional(&mut card.trust_box, by);
+    shift_optional(&mut card.ledger_label, by);
+    shift_optional(&mut card.days_rule, by);
+    shift_optional(&mut card.days_label, by);
+    shift_optional(&mut card.days_open_label, by);
+    shift_optional(&mut card.days_close_label, by);
+    shift_optional(&mut card.story_box, by);
+    shift_optional(&mut card.pace_caption_box, by);
+    shift_optional(&mut card.pace_box, by);
+    shift_optional(&mut card.cycle_box, by);
+    shift_optional(&mut card.status_box, by);
+    card.hero_box.y += by;
+    for fact in &mut card.facts {
+        fact.label.y += by;
+        fact.value.y += by;
+    }
+    for day in &mut card.days {
+        day.name_box.y += by;
+        day.open_box.y += by;
+        day.close_box.y += by;
+        shift_optional(&mut day.tick, by);
+    }
+    for tile in &mut card.tiles {
+        tile.spot.y += by;
+    }
+    for row in &mut card.rows {
+        row.spot.y += by;
+    }
+}
+
+fn tile_from(reading: Reading, light: bool, clock: String) -> Tile {
     Tile {
-        spot: Spot { x: 0, y: 0, w: 0, h: 0 },
+        spot: Spot {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        },
         label: reading.name.to_string(),
         value: format!("{}%", reading.remaining),
         mood: usage::mood_word(reading.remaining).to_string(),
+        clock,
         accent: rgb_color(usage::mood_rgb_on(Some(reading.remaining), light)),
         hot: false,
     }
+}
+
+fn reset_clock(reading: Reading, now: i64) -> String {
+    let Some(at) = reset_unix(reading.reset_at, reading.reset_after, now) else {
+        return String::new();
+    };
+    if at <= now {
+        return "지금 채워져요".to_string();
+    }
+    let (Some(today), Some(moment)) = (local_civil(now), local_civil(at)) else {
+        return String::new();
+    };
+    crate::settings::tile_clock(&usage::clock_when(today, moment))
+}
+
+fn settings_card(dpi: i32) -> Card {
+    let s = |value: i32| scale(value, dpi);
+    let cfg = config();
+    let width = s(CARD_W);
+    let pad = s(32);
+    let close_size = s(40);
+    let close = Spot {
+        x: width - close_size - s(16),
+        y: s(14),
+        w: close_size,
+        h: close_size,
+    };
+    let gear = Spot {
+        x: close.x - s(8) - s(72),
+        y: close.y,
+        w: s(72),
+        h: close_size,
+    };
+    let content_x = pad + s(16);
+    let content_w = width - pad - content_x;
+    let mut y = s(78);
+    let hero_box = Spot {
+        x: content_x,
+        y,
+        w: content_w,
+        h: s(36),
+    };
+    y += hero_box.h + s(6);
+    let note = "비밀번호는 받지 않습니다. 항목을 누르면 바뀝니다.".to_string();
+    let note_h = wrapped_line_count(&note, content_w, s(15)) * s(22) + s(4);
+    let note_box = Spot {
+        x: content_x,
+        y,
+        w: content_w,
+        h: note_h,
+    };
+    y += note_h + s(12);
+    let mut rows = Vec::new();
+    let add = |id: u8, label: &str, value: String, y: &mut i32, rows: &mut Vec<SettingRow>| {
+        let spot = Spot {
+            x: content_x,
+            y: *y,
+            w: content_w,
+            h: s(44),
+        };
+        *y += spot.h + s(8);
+        rows.push(SettingRow {
+            spot,
+            id,
+            label: label.to_string(),
+            value,
+        });
+    };
+    add(
+        ROW_SOURCE,
+        "환경",
+        match cfg.source {
+            crate::settings::Source::Windows => "Windows Codex".to_string(),
+            crate::settings::Source::Wsl => "WSL Codex".to_string(),
+        },
+        &mut y,
+        &mut rows,
+    );
+    if cfg.source == crate::settings::Source::Wsl {
+        let known = DISTROS
+            .lock()
+            .ok()
+            .map(|slot| slot.clone())
+            .unwrap_or_default();
+        let value = if !cfg.distro.is_empty() {
+            cfg.distro.clone()
+        } else if known.is_empty() {
+            "찾지 못했어요".to_string()
+        } else {
+            "눌러서 고르기".to_string()
+        };
+        add(ROW_DISTRO, "배포판", value, &mut y, &mut rows);
+    }
+    add(
+        ROW_FOCUS,
+        "대표 사용량",
+        match cfg.focus {
+            crate::settings::FocusPref::Auto => "자동".to_string(),
+            crate::settings::FocusPref::Session => "첫 창".to_string(),
+            crate::settings::FocusPref::Week => "한 주".to_string(),
+        },
+        &mut y,
+        &mut rows,
+    );
+    add(
+        ROW_START,
+        "시작 시 실행",
+        match cfg.autostart {
+            crate::settings::AutostartPref::On => "켜짐".to_string(),
+            crate::settings::AutostartPref::Off => "꺼짐".to_string(),
+            crate::settings::AutostartPref::Keep => "그대로".to_string(),
+        },
+        &mut y,
+        &mut rows,
+    );
+    add(
+        ROW_THEME,
+        "테마",
+        match cfg.theme {
+            crate::settings::ThemePref::System => "시스템".to_string(),
+            crate::settings::ThemePref::Dark => "어둡게".to_string(),
+            crate::settings::ThemePref::Light => "밝게".to_string(),
+        },
+        &mut y,
+        &mut rows,
+    );
+    add(
+        ROW_PATH,
+        "경로",
+        if cfg.codex_home.is_empty() {
+            "기본".to_string()
+        } else {
+            "지정한 경로 · 누르면 기본".to_string()
+        },
+        &mut y,
+        &mut rows,
+    );
+    add(
+        ROW_DONE,
+        "화면",
+        "사용량으로".to_string(),
+        &mut y,
+        &mut rows,
+    );
+    y += s(8);
+    let rule_h = s(1).max(2);
+    let bottom_rule = Some(Spot {
+        x: content_x,
+        y,
+        w: content_w,
+        h: rule_h,
+    });
+    y += rule_h + s(8);
+    let quit = Spot {
+        x: content_x,
+        y,
+        w: content_w,
+        h: s(36),
+    };
+    y += quit.h + s(16);
+    Card {
+        width,
+        height: y,
+        scroll_view: None,
+        scroll_offset: 0,
+        scroll_max: 0,
+        scroll_step: s(48),
+        close,
+        gear,
+        refresh: Spot {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        },
+        quit,
+        brand_box: Spot {
+            x: pad,
+            y: s(22),
+            w: s(150),
+            h: s(16),
+        },
+        plan_box: Spot {
+            x: pad + s(150),
+            y: s(22),
+            w: (gear.x - pad - s(150) - s(8)).max(s(40)),
+            h: s(16),
+        },
+        hero_box,
+        scope_box: None,
+        rail: None,
+        mood_box: None,
+        bar: None,
+        charge_box: None,
+        charge_bar: None,
+        top_rule: None,
+        bottom_rule,
+        refill_box: None,
+        note_box: Some(note_box),
+        trust_box: None,
+        ledger_label: None,
+        facts: Vec::new(),
+        days_rule: None,
+        days_label: None,
+        days_open_label: None,
+        days_close_label: None,
+        days: Vec::new(),
+        story_box: None,
+        story: String::new(),
+        pace_caption_box: None,
+        pace_box: None,
+        pace: String::new(),
+        cycle_box: None,
+        cycle: String::new(),
+        detail_box: None,
+        detail_label: String::new(),
+        detail_hint: String::new(),
+        tiles: Vec::new(),
+        rows,
+        status_box: None,
+        status: String::new(),
+        hero: "설정".to_string(),
+        scope: String::new(),
+        refill: String::new(),
+        charge: String::new(),
+        charge_fill: 0.0,
+        note,
+        trust: String::new(),
+        plan: String::new(),
+        hero_big: false,
+        remaining: 0,
+    }
+}
+
+fn wrapped_line_count(text: &str, width: i32, font_px: i32) -> i32 {
+    let per = (width / font_px.max(1)).max(8) as usize;
+    let mut lines = 0i32;
+    for part in text.split('\n') {
+        let chars = part.chars().count().max(1);
+        lines += ((chars + per - 1) / per) as i32;
+    }
+    lines.max(1)
+}
+
+unsafe fn work_area() -> RECT {
+    let mut work = RECT::default();
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut RECT as *mut c_void, 0);
+    work
+}
+
+unsafe fn work_area_for_anchor(anchor: Option<RECT>) -> RECT {
+    let Some(anchor) = anchor else {
+        return work_area();
+    };
+    let monitor = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        rcMonitor: RECT::default(),
+        rcWork: RECT::default(),
+        dwFlags: 0,
+    };
+    if !monitor.is_null() && GetMonitorInfoW(monitor, &mut info) != 0 {
+        info.rcWork
+    } else {
+        work_area()
+    }
+}
+
+unsafe fn popup_work_area(hwnd: HWND) -> RECT {
+    work_area_for_anchor(tray_anchor(hwnd))
+}
+
+unsafe fn tray_anchor(hwnd: HWND) -> Option<RECT> {
+    let id = NOTIFYICONIDENTIFIER {
+        cbSize: std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32,
+        hWnd: hwnd,
+        uID: ICON_ID,
+        guidItem: windows_sys::core::GUID::from_u128(0),
+    };
+    let mut rect = RECT::default();
+    if Shell_NotifyIconGetRect(&id, &mut rect) != 0 {
+        return None;
+    }
+    if rect.right <= rect.left || rect.bottom <= rect.top {
+        return None;
+    }
+    Some(rect)
 }
 
 unsafe fn place(hwnd: HWND) {
@@ -661,11 +2042,35 @@ unsafe fn place(hwnd: HWND) {
     let Some(view) = VIEW.lock().ok().map(|view| view.clone()) else {
         return;
     };
-    let card = card_for(&view, dpi);
-    let mut work = RECT::default();
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut RECT as *mut c_void, 0);
-    let x = work.right - card.width - scale(16, dpi);
-    let y = work.bottom - card.height - scale(16, dpi) + motion_offset();
+    let anchor = tray_anchor(hwnd);
+    let margin = scale(8, dpi);
+    let work = work_area_for_anchor(anchor);
+    let card = card_for(&view, dpi, work.bottom - work.top - margin * 2);
+    let (x, y) = if let Some(anchor) = anchor {
+        let x = anchor.right - card.width;
+        let mut y = anchor.top - card.height - margin + motion_offset();
+        if y < work.top + margin {
+            y = anchor.bottom + margin;
+        }
+        (x, y)
+    } else {
+        let x = work.right - card.width - scale(16, dpi);
+        let y = work.bottom - card.height - margin + motion_offset();
+        (x, y)
+    };
+    let (x, y) = crate::settings::clamp_popup(
+        x,
+        y,
+        card.width,
+        card.height,
+        crate::settings::WorkArea {
+            left: work.left,
+            top: work.top,
+            right: work.right,
+            bottom: work.bottom,
+        },
+        margin,
+    );
     SetWindowPos(
         hwnd,
         std::ptr::null_mut(),
@@ -675,23 +2080,40 @@ unsafe fn place(hwnd: HWND) {
         card.height,
         SWP_NOZORDER | SWP_NOACTIVATE,
     );
-    let radius = scale(22, dpi);
+    let radius = scale(32, dpi);
     let region = CreateRoundRectRgn(0, 0, card.width + 1, card.height + 1, radius, radius);
     if !region.is_null() {
         SetWindowRgn(hwnd, region, TRUE);
     }
 }
 
+fn motion_reduced() -> bool {
+    let mut enabled = 1i32;
+    let ok =
+        unsafe { SystemParametersInfoW(0x1042, 0, &mut enabled as *mut i32 as *mut c_void, 0) };
+    ok != 0 && enabled == 0
+}
+
 unsafe fn show_panel(hwnd: HWND) {
+    let reduced = motion_reduced();
     if let Ok(mut motion) = MOTION.lock() {
-        motion.tick = 0;
-        motion.live = true;
+        motion.tick = if reduced { MOTION_FRAMES } else { 0 };
+        motion.live = !reduced;
     }
     begin_open_count();
+    if reduced {
+        if let Ok(mut count) = COUNT.lock() {
+            count.tick = COUNT_FRAMES;
+        }
+    }
     place(hwnd);
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
-    SetTimer(hwnd, 1, 16, None);
+    SetFocus(hwnd);
+    if !reduced {
+        SetTimer(hwnd, 1, 16, None);
+    }
+    SetTimer(hwnd, 2, 30_000, None);
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -721,6 +2143,10 @@ unsafe extern "system" fn wnd_proc(
         }
         REFRESH_MSG => {
             apply_view();
+            0
+        }
+        WM_TIMER if wparam == 2 => {
+            InvalidateRect(hwnd, std::ptr::null(), FALSE);
             0
         }
         WM_TIMER => {
@@ -756,6 +2182,14 @@ unsafe extern "system" fn wnd_proc(
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             paint(hwnd);
+            0
+        }
+        WM_MOUSEWHEEL => {
+            let delta = ((wparam >> 16) as u16 as i16) as i32;
+            if delta != 0 {
+                let step = scale(48, window_dpi(hwnd)).max(1);
+                scroll_panel(hwnd, if delta > 0 { -step } else { step });
+            }
             0
         }
         WM_MOUSEMOVE => {
@@ -806,8 +2240,19 @@ unsafe extern "system" fn wnd_proc(
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
         }
+        WM_KEYDOWN if wparam == VK_ESCAPE as usize => {
+            hide_panel(hwnd);
+            0
+        }
+        WM_KEYDOWN if scroll_key(hwnd, wparam as u32) => 0,
+        WM_ACTIVATE if (wparam as u32 & 0xffff) == WA_INACTIVE as u32 => {
+            if IsWindowVisible(hwnd) != 0 {
+                hide_panel(hwnd);
+            }
+            0
+        }
         WM_CLOSE => {
-            ShowWindow(hwnd, SW_HIDE);
+            hide_panel(hwnd);
             0
         }
         WM_DESTROY => {
@@ -826,10 +2271,99 @@ unsafe extern "system" fn wnd_proc(
 fn activate(hwnd: HWND, hit: u8) {
     match hit {
         HIT_CLOSE => unsafe {
-            ShowWindow(hwnd, SW_HIDE);
+            hide_panel(hwnd);
         },
         HIT_REFRESH => request_refresh(),
+        HIT_DETAIL => {
+            DETAIL_OPEN.store(!DETAIL_OPEN.load(Ordering::Relaxed), Ordering::Relaxed);
+            SCROLL_Y.store(0, Ordering::Relaxed);
+            relayout(hwnd);
+        }
+        HIT_SETTINGS => {
+            SETTINGS_OPEN.store(true, Ordering::Relaxed);
+            SCROLL_Y.store(0, Ordering::Relaxed);
+            spawn_distro_reload();
+            relayout(hwnd);
+        }
+        ROW_DONE => {
+            SETTINGS_OPEN.store(false, Ordering::Relaxed);
+            SCROLL_Y.store(0, Ordering::Relaxed);
+            relayout(hwnd);
+        }
+        ROW_SOURCE => {
+            update_config(|cfg| {
+                cfg.source = match cfg.source {
+                    crate::settings::Source::Windows => crate::settings::Source::Wsl,
+                    crate::settings::Source::Wsl => crate::settings::Source::Windows,
+                };
+            });
+            if config().source == crate::settings::Source::Wsl {
+                spawn_distro_reload();
+            }
+            drop_cached_number();
+            request_refresh();
+            relayout(hwnd);
+        }
+        ROW_DISTRO => {
+            let names = distro_names();
+            if !names.is_empty() {
+                update_config(|cfg| {
+                    let index = names
+                        .iter()
+                        .position(|name| name == &cfg.distro)
+                        .map(|index| index + 1)
+                        .unwrap_or(0);
+                    cfg.distro = names[index % names.len()].clone();
+                });
+                drop_cached_number();
+                request_refresh();
+            }
+            relayout(hwnd);
+        }
+        ROW_FOCUS => {
+            update_config(|cfg| {
+                cfg.focus = match cfg.focus {
+                    crate::settings::FocusPref::Auto => crate::settings::FocusPref::Session,
+                    crate::settings::FocusPref::Session => crate::settings::FocusPref::Week,
+                    crate::settings::FocusPref::Week => crate::settings::FocusPref::Auto,
+                };
+            });
+            unsafe {
+                apply_view();
+            }
+        }
+        ROW_START => {
+            update_config(|cfg| {
+                cfg.autostart = match cfg.autostart {
+                    crate::settings::AutostartPref::Off => crate::settings::AutostartPref::On,
+                    _ => crate::settings::AutostartPref::Off,
+                };
+            });
+            apply_autostart(config().autostart);
+            relayout(hwnd);
+        }
+        ROW_THEME => {
+            update_config(|cfg| {
+                cfg.theme = match cfg.theme {
+                    crate::settings::ThemePref::System => crate::settings::ThemePref::Dark,
+                    crate::settings::ThemePref::Dark => crate::settings::ThemePref::Light,
+                    crate::settings::ThemePref::Light => crate::settings::ThemePref::System,
+                };
+            });
+            unsafe {
+                apply_view();
+            }
+        }
+        ROW_PATH => {
+            if !config().codex_home.is_empty() {
+                update_config(|cfg| cfg.codex_home.clear());
+                drop_cached_number();
+                request_refresh();
+            }
+            relayout(hwnd);
+        }
         HIT_QUIT => unsafe {
+            mark_trust_seen();
             QUIT_FLAG.store(true, Ordering::Relaxed);
             if let Some(tx) = WAKE.get() {
                 let _ = tx.send(());
@@ -841,58 +2375,182 @@ fn activate(hwnd: HWND, hit: u8) {
     }
 }
 
+fn relayout(hwnd: HWND) {
+    unsafe {
+        place(hwnd);
+        InvalidateRect(hwnd, std::ptr::null(), FALSE);
+    }
+}
+
 fn hit_at(hwnd: HWND, x: i32, y: i32) -> u8 {
     let Ok(view) = VIEW.lock() else {
         return 0;
     };
-    let card = card_for(&view, window_dpi(hwnd));
+    let dpi = window_dpi(hwnd);
+    let work = unsafe { popup_work_area(hwnd) };
+    let card = card_for(&view, dpi, work.bottom - work.top - scale(16, dpi));
     if card.close.contains(x, y) {
-        HIT_CLOSE
-    } else if card.refresh.contains(x, y) {
-        HIT_REFRESH
-    } else if card.quit.contains(x, y) {
-        HIT_QUIT
-    } else {
-        0
+        return HIT_CLOSE;
     }
+    if !SETTINGS_OPEN.load(Ordering::Relaxed) && card.gear.w > 0 && card.gear.contains(x, y) {
+        return HIT_SETTINGS;
+    }
+    if let Some(spot) = card.detail_box {
+        if spot.contains(x, y) {
+            return HIT_DETAIL;
+        }
+    }
+    if card.refresh.w > 0 && card.refresh.contains(x, y) {
+        return HIT_REFRESH;
+    }
+    if card.quit.contains(x, y) {
+        return HIT_QUIT;
+    }
+    if card
+        .scroll_view
+        .is_some_and(|viewport| !viewport.contains(x, y))
+    {
+        return 0;
+    }
+    for row in &card.rows {
+        if row.spot.contains(x, y) {
+            return row.id;
+        }
+    }
+    0
+}
+
+fn scroll_panel(hwnd: HWND, delta: i32) {
+    let Some(view) = VIEW.lock().ok().map(|view| view.clone()) else {
+        return;
+    };
+    let dpi = window_dpi(hwnd);
+    let work = unsafe { popup_work_area(hwnd) };
+    let card = card_for(&view, dpi, work.bottom - work.top - scale(16, dpi));
+    let next = card
+        .scroll_offset
+        .saturating_add(delta)
+        .clamp(0, card.scroll_max);
+    if next == card.scroll_offset {
+        return;
+    }
+    SCROLL_Y.store(next, Ordering::Relaxed);
+    HOVER.store(0, Ordering::Relaxed);
+    unsafe {
+        place(hwnd);
+        InvalidateRect(hwnd, std::ptr::null(), FALSE);
+    }
+}
+
+fn scroll_key(hwnd: HWND, key: u32) -> bool {
+    let Some(view) = VIEW.lock().ok().map(|view| view.clone()) else {
+        return false;
+    };
+    let dpi = window_dpi(hwnd);
+    let work = unsafe { popup_work_area(hwnd) };
+    let card = card_for(&view, dpi, work.bottom - work.top - scale(16, dpi));
+    if card.scroll_max == 0 {
+        return false;
+    }
+    let page = card
+        .scroll_view
+        .map(|viewport| (viewport.h - card.scroll_step).max(card.scroll_step))
+        .unwrap_or(card.scroll_step);
+    let next = match key {
+        key if key == VK_UP as u32 => card.scroll_offset - card.scroll_step,
+        key if key == VK_DOWN as u32 => card.scroll_offset + card.scroll_step,
+        key if key == VK_PRIOR as u32 => card.scroll_offset - page,
+        key if key == VK_NEXT as u32 => card.scroll_offset + page,
+        key if key == VK_HOME as u32 => 0,
+        key if key == VK_END as u32 => card.scroll_max,
+        _ => return false,
+    };
+    scroll_panel(hwnd, next - card.scroll_offset);
+    true
 }
 
 unsafe fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
-    let view = VIEW.lock().ok().map(|view| view.clone()).unwrap_or(View::Loading);
-    let card = card_for(&view, window_dpi(hwnd));
-    let fonts = fonts_for(window_dpi(hwnd));
-    let palette = palette_now();
-    blend_round(hdc, Spot { x: 0, y: 0, w: card.width, h: card.height }, px(&card, 22), palette.plate, true);
-    paint_card(hdc, &card, &fonts, &palette);
+    let dpi = window_dpi(hwnd);
+    let view = VIEW
+        .lock()
+        .ok()
+        .map(|view| view.clone())
+        .unwrap_or(View::Loading);
+    let work = popup_work_area(hwnd);
+    let card = card_for(&view, dpi, work.bottom - work.top - scale(16, dpi));
+    paint_prepared(hdc, &card, dpi);
     EndPaint(hwnd, &ps);
 }
 
-unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, fonts: &Fonts, palette: &Palette) {
+unsafe fn paint_prepared(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, dpi: i32) {
+    let fonts = fonts_for(dpi);
+    let palette = palette_now();
+    let outer = px(card, 32);
+    blend_round(
+        hdc,
+        Spot {
+            x: 0,
+            y: 0,
+            w: card.width,
+            h: card.height,
+        },
+        outer,
+        palette.depth,
+    );
+    let inset = px(&card, 7);
+    if card.width > inset * 2 + 24 && card.height > inset * 2 + 24 {
+        blend_round(
+            hdc,
+            Spot {
+                x: inset,
+                y: inset,
+                w: card.width - inset * 2,
+                h: card.height - inset * 2,
+            },
+            px(&card, 26),
+            palette.plate,
+        );
+    }
+    paint_card(hdc, card, &fonts, &palette);
+}
+
+unsafe fn paint_card(
+    hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+    card: &Card,
+    fonts: &Fonts,
+    palette: &Palette,
+) {
     let hover = HOVER.load(Ordering::Relaxed);
-    let one = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
+    let left = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
+    let shown = animated_remaining(card.remaining);
+    let accent = rgb_color(usage::mood_rgb_on(Some(shown), palette.light));
     if hover == HIT_CLOSE {
         fill_round(hdc, card.close, card.close.h / 2, palette.soft);
     }
-    SetTextCharacterExtra(hdc, px(card, 1).max(1));
+    SetTextCharacterExtra(hdc, px(card, 2));
     text_in(
         hdc,
         fonts.brand,
         palette.ink,
         card.brand_box.rect(),
         "JUSAGE",
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        left,
     );
-    let brand_w = text_size(hdc, fonts.brand, "JUSAGE").cx + px(card, 18);
     SetTextCharacterExtra(hdc, 0);
     text_in(
         hdc,
         fonts.quiet,
         palette.muted,
-        rect(card.brand_box.x + brand_w, card.brand_box.y, px(card, 70), card.brand_box.h),
-        "CODEX",
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        rect(
+            card.brand_box.x,
+            card.brand_box.y + card.brand_box.h + px(card, 1),
+            px(card, 88),
+            px(card, 16),
+        ),
+        "Codex",
+        left,
     );
     if !card.plan.is_empty() {
         text_in(
@@ -904,7 +2562,69 @@ unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, f
             DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
     }
-    text_in(hdc, fonts.brand, palette.muted, card.close.rect(), "×", DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    text_in(
+        hdc,
+        fonts.brand,
+        palette.muted,
+        card.close.rect(),
+        "×",
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    if card.rows.is_empty() && card.gear.w > 0 {
+        if hover == HIT_SETTINGS {
+            fill_round(hdc, card.gear, card.gear.h / 2, palette.soft);
+        }
+        text_in(
+            hdc,
+            fonts.label,
+            palette.ink,
+            card.gear.rect(),
+            "설정",
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+    }
+    let scroll_clip = card.scroll_view.and_then(|viewport| {
+        let saved = SaveDC(hdc);
+        if saved == 0 {
+            None
+        } else {
+            IntersectClipRect(
+                hdc,
+                viewport.x,
+                viewport.y,
+                viewport.x + viewport.w,
+                viewport.y + viewport.h,
+            );
+            Some(saved)
+        }
+    });
+    if let Some(spot) = card.trust_box {
+        text_in(
+            hdc,
+            fonts.body,
+            palette.muted,
+            spot.rect(),
+            &card.trust,
+            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
+        );
+    }
+    if let Some(rule) = card.top_rule {
+        blend_round(hdc, rule, 0, palette.line);
+    }
+    if let Some(scope) = card.scope_box {
+        text_in(
+            hdc,
+            fonts.quiet,
+            palette.muted,
+            scope.rect(),
+            &card.scope,
+            left,
+        );
+    }
+    if let Some(rail) = card.rail {
+        let [red, green, blue] = color_rgb(accent);
+        blend_round(hdc, rail, rail.w, [red, green, blue, 255]);
+    }
     if card.hero_big {
         paint_meter(hdc, card, fonts, palette);
     } else {
@@ -914,121 +2634,560 @@ unsafe fn paint_card(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, f
             palette.ink,
             card.hero_box.rect(),
             &card.hero,
-            one,
+            left,
         );
     }
-    if let Some(scope) = card.scope_box {
-        text_in(hdc, fonts.quiet, palette.muted, scope.rect(), &card.scope, one);
+    if let Some(mood) = card.mood_box {
+        text_in(
+            hdc,
+            fonts.label,
+            accent,
+            mood.rect(),
+            usage::mood_word(shown),
+            DT_RIGHT | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX,
+        );
     }
-    if let Some(bar) = card.bar {
-        blend_round(hdc, bar, bar.h, palette.track, false);
-        let shown = animated_remaining(card.remaining);
-        let filled = (bar.w as u32 * shown / 100) as i32;
-        if filled > 0 {
-            let [r, g, b] = usage::mood_rgb_on(Some(shown), palette.light);
-            blend_round(hdc, Spot { w: filled.max(bar.h), ..bar }, bar.h, [r, g, b, 255], false);
-        }
-    }
-    if let Some(spot) = card.refill_box {
-        text_in(hdc, fonts.body, palette.muted, spot.rect(), &card.refill, one);
+    if let Some(spot) = card.bar {
+        paint_capsule(
+            hdc,
+            spot,
+            shown as f32 / 100.0,
+            color_rgb(accent),
+            palette.track,
+        );
     }
     if let Some(spot) = card.note_box {
-        text_in(hdc, fonts.body, palette.muted, spot.rect(), &card.note, one);
+        text_in(
+            hdc,
+            fonts.body,
+            palette.muted,
+            spot.rect(),
+            &card.note,
+            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
+        );
     }
-    for tile in &card.tiles {
-        let radius = px(card, 16);
-        if tile.hot {
-            let [r, g, b] = color_rgb(tile.accent);
-            blend_round(hdc, tile.spot, radius, [r, g, b, 70], false);
-            let inset = Spot {
-                x: tile.spot.x + 1,
-                y: tile.spot.y + 1,
-                w: (tile.spot.w - 2).max(1),
-                h: (tile.spot.h - 2).max(1),
-            };
-            blend_round(hdc, inset, radius - 1, palette.inset, false);
+    if let Some(spot) = card.charge_box {
+        text_in(
+            hdc,
+            fonts.lead,
+            palette.ink,
+            spot.rect(),
+            &card.charge,
+            left,
+        );
+    }
+    if let Some(spot) = card.refill_box {
+        let flags = if card.refill.contains('\n') {
+            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX
         } else {
-            blend_round(hdc, tile.spot, radius, palette.tile, false);
-        }
-        let inner_x = tile.spot.x + px(card, 14);
-        let inner_w = tile.spot.w - px(card, 28);
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX
+        };
         text_in(
             hdc,
             fonts.quiet,
             palette.muted,
-            rect(inner_x, tile.spot.y + px(card, 10), inner_w, px(card, 18)),
+            spot.rect(),
+            &card.refill,
+            flags,
+        );
+    }
+    if let Some(spot) = card.charge_bar {
+        paint_capsule(hdc, spot, card.charge_fill, palette.charge, palette.track);
+    }
+
+    for tile in &card.tiles {
+        let radius = px(card, 18);
+        let border = if tile.hot { palette.hot } else { palette.edge };
+        stroke_panel(
+            hdc,
+            tile.spot,
+            radius,
+            palette.card,
+            border,
+            px(card, 1).max(2),
+        );
+        let inner_x = tile.spot.x + px(card, 14);
+        let inner_w = tile.spot.w - px(card, 28);
+        text_in(
+            hdc,
+            fonts.label,
+            palette.muted,
+            rect(inner_x, tile.spot.y + px(card, 12), inner_w, px(card, 22)),
             &tile.label,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            left,
         );
         text_in(
             hdc,
             fonts.figure,
             palette.ink,
-            rect(inner_x, tile.spot.y + px(card, 28), inner_w, px(card, 28)),
+            rect(inner_x, tile.spot.y + px(card, 34), inner_w, px(card, 30)),
             &tile.value,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            left,
         );
         text_in(
             hdc,
-            fonts.quiet,
+            fonts.body,
             tile.accent,
-            rect(inner_x, tile.spot.y + px(card, 56), inner_w, px(card, 18)),
+            rect(inner_x, tile.spot.y + px(card, 66), inner_w, px(card, 22)),
             &tile.mood,
+            left,
+        );
+        if !tile.clock.is_empty() {
+            text_in(
+                hdc,
+                fonts.quiet,
+                palette.muted,
+                rect(inner_x, tile.spot.y + px(card, 88), inner_w, px(card, 36)),
+                &tile.clock,
+                DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
+            );
+        }
+        let percent = tile.value.trim_end_matches('%').parse::<u32>().unwrap_or(0);
+        paint_capsule(
+            hdc,
+            Spot {
+                x: inner_x,
+                y: tile.spot.y + tile.spot.h - px(card, 18),
+                w: inner_w,
+                h: px(card, 6),
+            },
+            percent as f32 / 100.0,
+            color_rgb(tile.accent),
+            palette.track,
+        );
+    }
+    if let Some(well) = detail_well(card) {
+        let spot = inflate_spot(well, px(card, 8), card.width);
+        stroke_panel(
+            hdc,
+            spot,
+            px(card, 18),
+            palette.card,
+            palette.edge,
+            px(card, 1).max(1),
+        );
+    }
+    if let Some(spot) = card.pace_caption_box {
+        text_in(
+            hdc,
+            fonts.quiet,
+            palette.muted,
+            spot.rect(),
+            "속도 예상",
+            left,
+        );
+    }
+    if let Some(spot) = card.pace_box {
+        text_in(
+            hdc,
+            fonts.body,
+            palette.ink,
+            spot.rect(),
+            &card.pace,
+            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
+        );
+    }
+    if let Some(spot) = card.cycle_box {
+        text_in(
+            hdc,
+            fonts.body,
+            palette.ink,
+            spot.rect(),
+            &card.cycle,
+            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
+        );
+    }
+    if let Some(spot) = card.ledger_label {
+        text_in(
+            hdc,
+            fonts.quiet,
+            palette.muted,
+            spot.rect(),
+            "오늘 기록",
+            left,
+        );
+    }
+    for fact in &card.facts {
+        text_in(
+            hdc,
+            fonts.label,
+            palette.muted,
+            fact.label.rect(),
+            &fact.name,
+            left,
+        );
+        text_in(
+            hdc,
+            fonts.lead,
+            palette.ink,
+            fact.value.rect(),
+            &fact.text,
+            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+    }
+    if let Some(rule) = card.days_rule {
+        blend_round(hdc, rule, 0, palette.line);
+    }
+    if let Some(spot) = card.days_label {
+        text_in(
+            hdc,
+            fonts.quiet,
+            palette.muted,
+            spot.rect(),
+            "최근 7일",
+            left,
+        );
+    }
+    if let Some(spot) = card.days_open_label {
+        text_in(hdc, fonts.quiet, palette.muted, spot.rect(), "처음", left);
+    }
+    if let Some(spot) = card.days_close_label {
+        text_in(hdc, fonts.quiet, palette.muted, spot.rect(), "나중", left);
+    }
+    let center = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+    for col in &card.days {
+        let name_color = if col.today {
+            palette.ink
+        } else {
+            palette.muted
+        };
+        text_in(
+            hdc,
+            fonts.label,
+            name_color,
+            col.name_box.rect(),
+            &col.name,
+            center,
+        );
+        if let Some(tick) = col.tick {
+            let [red, green, blue] = color_rgb(palette.ink);
+            blend_round(hdc, tick, tick.h, [red, green, blue, 255]);
+        }
+        text_in(
+            hdc,
+            fonts.digit,
+            palette.muted,
+            col.open_box.rect(),
+            &col.open,
+            center,
+        );
+        let close_color = if col.close == "·" {
+            palette.muted
+        } else {
+            palette.ink
+        };
+        text_in(
+            hdc,
+            fonts.digit,
+            close_color,
+            col.close_box.rect(),
+            &col.close,
+            center,
+        );
+    }
+    if let Some(spot) = card.story_box {
+        text_in(
+            hdc,
+            fonts.body,
+            palette.ink,
+            spot.rect(),
+            &card.story,
+            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
+        );
+    }
+    if let Some(spot) = card.status_box {
+        text_in(
+            hdc,
+            fonts.quiet,
+            palette.muted,
+            spot.rect(),
+            &card.status,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
     }
-    if let Some(spot) = card.delta_box {
-        text_in(hdc, fonts.body, palette.ink, spot.rect(), &card.delta, one);
+    for row in &card.rows {
+        let hot = hover == row.id;
+        let fill = if hot { palette.hover } else { palette.card };
+        stroke_panel(
+            hdc,
+            row.spot,
+            px(card, 16),
+            fill,
+            palette.edge,
+            px(card, 1).max(1),
+        );
+        let label_w = row.spot.w * 42 / 100;
+        text_in(
+            hdc,
+            fonts.label,
+            palette.muted,
+            rect(row.spot.x + px(card, 14), row.spot.y, label_w, row.spot.h),
+            &row.label,
+            left,
+        );
+        text_in(
+            hdc,
+            fonts.lead,
+            palette.ink,
+            rect(
+                row.spot.x + label_w,
+                row.spot.y,
+                row.spot.w - label_w - px(card, 14),
+                row.spot.h,
+            ),
+            &row.value,
+            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
     }
-    let refresh_fill = if hover == HIT_REFRESH { palette.button_hover } else { palette.button };
-    fill_round(hdc, card.refresh, card.refresh.h / 2, refresh_fill);
+    if let Some(saved) = scroll_clip {
+        RestoreDC(hdc, saved);
+    }
+    if let Some(spot) = card.detail_box {
+        let fill = if hover == HIT_DETAIL {
+            palette.hover
+        } else {
+            palette.card
+        };
+        stroke_panel(
+            hdc,
+            spot,
+            px(card, 16),
+            fill,
+            palette.edge,
+            px(card, 1).max(1),
+        );
+        let label_w = spot.w * 28 / 100;
+        text_in(
+            hdc,
+            fonts.label,
+            palette.ink,
+            rect(spot.x + px(card, 14), spot.y, label_w, spot.h),
+            &card.detail_label,
+            left,
+        );
+        if !card.detail_hint.is_empty() {
+            text_in(
+                hdc,
+                fonts.quiet,
+                palette.muted,
+                rect(
+                    spot.x + label_w,
+                    spot.y,
+                    spot.w - label_w - px(card, 14),
+                    spot.h,
+                ),
+                &card.detail_hint,
+                DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            );
+        }
+    }
+    if let Some(rule) = card.bottom_rule {
+        blend_round(hdc, rule, 0, palette.line);
+    }
+    if card.refresh.w > 0 {
+        if hover == HIT_REFRESH {
+            fill_round(hdc, card.refresh, card.refresh.h / 2, palette.soft);
+        }
+        text_in(
+            hdc,
+            fonts.quiet,
+            palette.muted,
+            card.refresh.rect(),
+            "다시 확인",
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+    }
     text_in(
         hdc,
-        fonts.body,
-        palette.button_text,
-        card.refresh.rect(),
-        "다시 확인",
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-    );
-    text_in(
-        hdc,
-        fonts.body,
-        if hover == HIT_QUIT { palette.ink } else { palette.muted },
+        fonts.quiet,
+        if hover == HIT_QUIT {
+            palette.ink
+        } else {
+            palette.muted
+        },
         card.quit.rect(),
         "끝내기",
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
 }
 
-unsafe fn paint_meter(hdc: windows_sys::Win32::Graphics::Gdi::HDC, card: &Card, fonts: &Fonts, palette: &Palette) {
+unsafe fn paint_meter(
+    hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+    card: &Card,
+    fonts: &Fonts,
+    palette: &Palette,
+) {
     let shown = animated_remaining(card.remaining);
     SHOWN.store(shown as i32, Ordering::Relaxed);
-    let hero = format!("{shown}%");
-    let word = usage::mood_word(shown);
-    let accent = rgb_color(usage::mood_rgb_on(Some(shown), palette.light));
-    let percent = text_size(hdc, fonts.hero, &hero);
-    let word_size = text_size(hdc, fonts.body, word);
-    let gap = px(card, 8);
-    let total = percent.cx + gap + word_size.cx;
-    let x = card.hero_box.x + (card.hero_box.w - total).max(0) / 2;
-    let percent_y = card.hero_box.y + (card.hero_box.h - percent.cy).max(0) / 2;
+    let digits = format!("{shown}");
+    let width = text_size(hdc, fonts.hero, &digits).cx;
     text_in(
         hdc,
         fonts.hero,
-        accent,
-        rect(x, percent_y, percent.cx + px(card, 4), percent.cy + 4),
-        &hero,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        palette.ink,
+        card.hero_box.rect(),
+        &digits,
+        DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX,
     );
-    let word_y = card.hero_box.y + (card.hero_box.h - word_size.cy).max(0) / 2;
+    let unit_h = px(card, 28);
     text_in(
         hdc,
-        fonts.body,
-        accent,
-        rect(x + percent.cx + gap, word_y, word_size.cx + px(card, 8), word_size.cy + 4),
-        word,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        fonts.unit,
+        palette.ink,
+        rect(
+            card.hero_box.x + width + px(card, 2),
+            card.hero_box.y + card.hero_box.h - unit_h,
+            px(card, 28),
+            unit_h,
+        ),
+        "%",
+        DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX,
     );
+}
+
+unsafe fn paint_capsule(
+    hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+    spot: Spot,
+    fraction: f32,
+    fill: [u8; 3],
+    track: [u8; 4],
+) {
+    if spot.w <= 2 || spot.h <= 2 {
+        return;
+    }
+    let width = spot.w as u32;
+    let height = spot.h as u32;
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    let radius = height as f32 / 2.0;
+    let fill_w = (width as f32) * fraction.clamp(0.0, 1.0);
+    for y in 0..height {
+        for x in 0..width {
+            let cover = round_coverage(x as f32, y as f32, width as f32, height as f32, radius);
+            if cover <= 0.0 {
+                continue;
+            }
+            let (red, green, blue, alpha) = if (x as f32 + 0.5) < fill_w {
+                let lift = if y * 3 < height { 32 } else { 0 };
+                (
+                    fill[0].saturating_add(lift),
+                    fill[1].saturating_add(lift),
+                    fill[2].saturating_add(lift),
+                    255u8,
+                )
+            } else {
+                (track[0], track[1], track[2], track[3])
+            };
+            let alpha = ((alpha as f32) * cover.min(1.0)) as u8;
+            let index = ((y * width + x) * 4) as usize;
+            pixels[index] = premul(blue, alpha);
+            pixels[index + 1] = premul(green, alpha);
+            pixels[index + 2] = premul(red, alpha);
+            pixels[index + 3] = alpha;
+        }
+    }
+    blend_pixels(hdc, spot, &pixels);
+}
+
+fn detail_well(card: &Card) -> Option<Spot> {
+    let mut spots = Vec::new();
+    for spot in [
+        card.pace_caption_box,
+        card.pace_box,
+        card.cycle_box,
+        card.ledger_label,
+        card.days_rule,
+        card.days_label,
+        card.story_box,
+    ] {
+        if let Some(spot) = spot {
+            spots.push(spot);
+        }
+    }
+    for fact in &card.facts {
+        spots.push(fact.label);
+    }
+    for col in &card.days {
+        spots.push(col.name_box);
+        spots.push(col.close_box);
+    }
+    union_spots(&spots)
+}
+
+fn union_spots(spots: &[Spot]) -> Option<Spot> {
+    let mut acc: Option<Spot> = None;
+    for spot in spots {
+        acc = Some(match acc {
+            None => *spot,
+            Some(have) => {
+                let left = have.x.min(spot.x);
+                let top = have.y.min(spot.y);
+                let right = (have.x + have.w).max(spot.x + spot.w);
+                let bottom = (have.y + have.h).max(spot.y + spot.h);
+                Spot {
+                    x: left,
+                    y: top,
+                    w: right - left,
+                    h: bottom - top,
+                }
+            }
+        });
+    }
+    acc
+}
+
+fn inflate_spot(spot: Spot, pad: i32, limit: i32) -> Spot {
+    let x = (spot.x - pad).max(pad);
+    let y = (spot.y - pad).max(0);
+    let right = (spot.x + spot.w + pad).min(limit - pad);
+    let bottom = spot.y + spot.h + pad;
+    Spot {
+        x,
+        y,
+        w: (right - x).max(1),
+        h: (bottom - y).max(1),
+    }
+}
+
+unsafe fn stroke_panel(
+    hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+    spot: Spot,
+    radius: i32,
+    fill: [u8; 4],
+    line: [u8; 4],
+    inset: i32,
+) {
+    blend_round(hdc, spot, radius, line);
+    if spot.w <= inset * 2 + 4 || spot.h <= inset * 2 + 4 {
+        return;
+    }
+    blend_round(
+        hdc,
+        Spot {
+            x: spot.x + inset,
+            y: spot.y + inset,
+            w: spot.w - inset * 2,
+            h: spot.h - inset * 2,
+        },
+        (radius - inset).max(0),
+        fill,
+    );
+}
+
+fn assign_window_icon(hwnd: HWND, icon: HICON) {
+    if hwnd.is_null() || icon.is_null() {
+        return;
+    }
+    unsafe {
+        SendMessageW(hwnd, WM_SETICON, 0, icon as LPARAM);
+        SendMessageW(hwnd, WM_SETICON, 1, icon as LPARAM);
+    }
+}
+
+unsafe fn hide_panel(hwnd: HWND) {
+    mark_trust_seen();
+    ShowWindow(hwnd, SW_HIDE);
+    KillTimer(hwnd, 1);
+    KillTimer(hwnd, 2);
 }
 
 fn px(card: &Card, logical: i32) -> i32 {
@@ -1049,28 +3208,37 @@ unsafe fn fonts_for(dpi: i32) -> Fonts {
                 dpi: fonts.dpi,
                 brand: fonts.brand,
                 hero: fonts.hero,
+                unit: fonts.unit,
                 figure: fonts.figure,
                 lead: fonts.lead,
+                label: fonts.label,
                 body: fonts.body,
                 quiet: fonts.quiet,
+                digit: fonts.digit,
             };
         }
         DeleteObject(fonts.brand as HGDIOBJ);
         DeleteObject(fonts.hero as HGDIOBJ);
+        DeleteObject(fonts.unit as HGDIOBJ);
         DeleteObject(fonts.figure as HGDIOBJ);
         DeleteObject(fonts.lead as HGDIOBJ);
+        DeleteObject(fonts.label as HGDIOBJ);
         DeleteObject(fonts.body as HGDIOBJ);
         DeleteObject(fonts.quiet as HGDIOBJ);
+        DeleteObject(fonts.digit as HGDIOBJ);
     }
     let fonts = make_fonts(dpi);
     *slot = Some(Fonts {
         dpi: fonts.dpi,
         brand: fonts.brand,
         hero: fonts.hero,
+        unit: fonts.unit,
         figure: fonts.figure,
         lead: fonts.lead,
+        label: fonts.label,
         body: fonts.body,
         quiet: fonts.quiet,
+        digit: fonts.digit,
     });
     fonts
 }
@@ -1078,18 +3246,36 @@ unsafe fn fonts_for(dpi: i32) -> Fonts {
 unsafe fn make_fonts(dpi: i32) -> Fonts {
     Fonts {
         dpi,
-        brand: font(scale(12, dpi), FW_SEMIBOLD, "Cascadia Mono"),
-        hero: font(scale(46, dpi), FW_SEMIBOLD, "Cascadia Mono"),
+        brand: font(scale(13, dpi), FW_SEMIBOLD, "Cascadia Mono"),
+        hero: font(scale(64, dpi), FW_SEMIBOLD, "Cascadia Mono"),
+        unit: font(scale(20, dpi), FW_SEMIBOLD, "Cascadia Mono"),
         figure: font(scale(22, dpi), FW_SEMIBOLD, "Cascadia Mono"),
-        lead: font(scale(18, dpi), FW_SEMIBOLD, "Segoe UI"),
-        body: font(scale(13, dpi), FW_NORMAL, "Segoe UI"),
-        quiet: font(scale(12, dpi), FW_NORMAL, "Segoe UI"),
+        lead: font(scale(16, dpi), FW_SEMIBOLD, "Segoe UI"),
+        label: font(scale(14, dpi), FW_SEMIBOLD, "Segoe UI"),
+        body: font(scale(16, dpi), FW_NORMAL, "Segoe UI"),
+        quiet: font(scale(14, dpi), FW_NORMAL, "Segoe UI"),
+        digit: font(scale(15, dpi), FW_SEMIBOLD, "Cascadia Mono"),
     }
 }
 
 unsafe fn font(height: i32, weight: u32, face_name: &str) -> HFONT {
     let face = wide(face_name);
-    CreateFontW(-height, 0, 0, 0, weight as i32, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr())
+    CreateFontW(
+        -height,
+        0,
+        0,
+        0,
+        weight as i32,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        0,
+        face.as_ptr(),
+    )
 }
 
 unsafe fn text_size(hdc: windows_sys::Win32::Graphics::Gdi::HDC, font: HFONT, value: &str) -> SIZE {
@@ -1104,7 +3290,14 @@ unsafe fn text_size(hdc: windows_sys::Win32::Graphics::Gdi::HDC, font: HFONT, va
     size
 }
 
-unsafe fn text_in(hdc: windows_sys::Win32::Graphics::Gdi::HDC, font: HFONT, color: u32, mut area: RECT, value: &str, format: u32) {
+unsafe fn text_in(
+    hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+    font: HFONT,
+    color: u32,
+    mut area: RECT,
+    value: &str,
+    format: u32,
+) {
     let old = SelectObject(hdc, font as HGDIOBJ);
     SetBkMode(hdc, TRANSPARENT as i32);
     SetTextColor(hdc, color as COLORREF);
@@ -1113,12 +3306,25 @@ unsafe fn text_in(hdc: windows_sys::Win32::Graphics::Gdi::HDC, font: HFONT, colo
     SelectObject(hdc, old);
 }
 
-unsafe fn fill_round(hdc: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, radius: i32, color: u32) {
+unsafe fn fill_round(
+    hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+    spot: Spot,
+    radius: i32,
+    color: u32,
+) {
     let brush = CreateSolidBrush(color as COLORREF);
     let pen = CreatePen(PS_SOLID, 1, color as COLORREF);
     let old_brush = SelectObject(hdc, brush as HGDIOBJ);
     let old_pen = SelectObject(hdc, pen as HGDIOBJ);
-    RoundRect(hdc, spot.x, spot.y, spot.x + spot.w, spot.y + spot.h, radius, radius);
+    RoundRect(
+        hdc,
+        spot.x,
+        spot.y,
+        spot.x + spot.w,
+        spot.y + spot.h,
+        radius,
+        radius,
+    );
     SelectObject(hdc, old_brush);
     SelectObject(hdc, old_pen);
     DeleteObject(brush as HGDIOBJ);
@@ -1126,7 +3332,12 @@ unsafe fn fill_round(hdc: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, ra
 }
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> RECT {
-    RECT { left: x, top: y, right: x + w, bottom: y + h }
+    RECT {
+        left: x,
+        top: y,
+        right: x + w,
+        bottom: y + h,
+    }
 }
 
 fn mouse_xy(lparam: LPARAM) -> (i32, i32) {
@@ -1175,7 +3386,10 @@ unsafe fn tray_data(hwnd: HWND, icon: HICON, tip: &str) -> NOTIFYICONDATAW {
 }
 
 unsafe fn make_icon(size: u32, remaining: u32, color: [u8; 3], show_number: bool) -> HICON {
-    let pixels = remaining_icon(size, remaining, color, show_number);
+    let mut pixels = remaining_icon(size, remaining, color, false);
+    if show_number && !draw_font_number(&mut pixels, size, remaining) {
+        pixels = remaining_icon(size, remaining, color, true);
+    }
     let bmi = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -1190,7 +3404,14 @@ unsafe fn make_icon(size: u32, remaining: u32, color: [u8; 3], show_number: bool
     };
     let hdc = GetDC(std::ptr::null_mut());
     let mut bits = std::ptr::null_mut();
-    let color = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+    let color = CreateDIBSection(
+        hdc,
+        &bmi,
+        DIB_RGB_COLORS,
+        &mut bits,
+        std::ptr::null_mut(),
+        0,
+    );
     ReleaseDC(std::ptr::null_mut(), hdc);
     if color.is_null() || bits.is_null() {
         return std::ptr::null_mut();
@@ -1218,6 +3439,185 @@ unsafe fn make_icon(size: u32, remaining: u32, color: [u8; 3], show_number: bool
     icon
 }
 
+unsafe fn draw_font_number(pixels: &mut [u8], size: u32, number: u32) -> bool {
+    let text = number.to_string();
+    let wide_text = wide(&text);
+    let chars = wide_text.len().saturating_sub(1) as i32;
+    if chars <= 0 {
+        return false;
+    }
+    let center = (size as f32 - 1.0) / 2.0;
+    let hole = (((center - 0.15) * 0.80) * 2.0).round() as i32;
+    let max_w = (hole as f32 * 0.82) as i32;
+    let max_h = (hole as f32 * 0.72) as i32;
+    if max_w < 8 || max_h < 8 {
+        return false;
+    }
+    let screen = GetDC(std::ptr::null_mut());
+    if screen.is_null() {
+        return false;
+    }
+    let mut height = max_h;
+    let mut chosen = std::ptr::null_mut();
+    while height >= 8 {
+        let face = wide("Cascadia Mono");
+        let font = CreateFontW(
+            -height,
+            0,
+            0,
+            0,
+            FW_SEMIBOLD as i32,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            4,
+            0,
+            face.as_ptr(),
+        );
+        if font.is_null() {
+            height -= 1;
+            continue;
+        }
+        let old = SelectObject(screen, font as HGDIOBJ);
+        let mut extent = SIZE { cx: 0, cy: 0 };
+        GetTextExtentPoint32W(screen, wide_text.as_ptr(), chars, &mut extent);
+        SelectObject(screen, old);
+        if extent.cx > 0 && extent.cx <= max_w && extent.cy <= max_h {
+            chosen = font;
+            break;
+        }
+        let _ = DeleteObject(font as HGDIOBJ);
+        height -= 1;
+    }
+    ReleaseDC(std::ptr::null_mut(), screen);
+    if chosen.is_null() {
+        return false;
+    }
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: size as i32,
+            biHeight: -(size as i32),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0,
+            ..BITMAPINFOHEADER::default()
+        },
+        ..BITMAPINFO::default()
+    };
+    let screen = GetDC(std::ptr::null_mut());
+    let mut bits = std::ptr::null_mut();
+    let dib = CreateDIBSection(
+        screen,
+        &bmi,
+        DIB_RGB_COLORS,
+        &mut bits,
+        std::ptr::null_mut(),
+        0,
+    );
+    let mem = CreateCompatibleDC(screen);
+    ReleaseDC(std::ptr::null_mut(), screen);
+    if dib.is_null() || bits.is_null() || mem.is_null() {
+        let _ = DeleteObject(chosen as HGDIOBJ);
+        if !dib.is_null() {
+            let _ = DeleteObject(dib as HGDIOBJ);
+        }
+        if !mem.is_null() {
+            DeleteDC(mem);
+        }
+        return false;
+    }
+    std::ptr::write_bytes(bits, 0, (size * size * 4) as usize);
+    let old_bmp = SelectObject(mem, dib as HGDIOBJ);
+    let old_font = SelectObject(mem, chosen as HGDIOBJ);
+    SetBkMode(mem, TRANSPARENT as i32);
+    SetTextColor(mem, 0x00FF_FFFF);
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: size as i32,
+        bottom: size as i32,
+    };
+    DrawTextW(
+        mem,
+        wide_text.as_ptr(),
+        chars,
+        &mut rect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    let count = (size * size) as usize;
+    let raw = std::slice::from_raw_parts(bits as *const u8, count * 4);
+    let mut cover = vec![0u8; count];
+    for index in 0..count {
+        let blue = raw[index * 4] as u16;
+        let green = raw[index * 4 + 1] as u16;
+        let red = raw[index * 4 + 2] as u16;
+        cover[index] = ((red + green + blue) / 3).min(255) as u8;
+    }
+    SelectObject(mem, old_font);
+    SelectObject(mem, old_bmp);
+    let _ = DeleteObject(chosen as HGDIOBJ);
+    let _ = DeleteObject(dib as HGDIOBJ);
+    DeleteDC(mem);
+    if cover.iter().all(|value| *value == 0) {
+        return false;
+    }
+    let side = size as i32;
+    let mut halo = vec![0u8; count];
+    for y in 0..side {
+        for x in 0..side {
+            let mut best = 0u8;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let xx = x + dx;
+                    let yy = y + dy;
+                    if xx < 0 || yy < 0 || xx >= side || yy >= side {
+                        continue;
+                    }
+                    best = best.max(cover[(yy * side + xx) as usize]);
+                }
+            }
+            halo[(y * side + x) as usize] = best;
+        }
+    }
+    for y in 0..side {
+        for x in 0..side {
+            let alpha = halo[(y * side + x) as usize];
+            if alpha > 0 {
+                over_pixel(pixels, size, x as u32, y as u32, [17, 21, 34], alpha);
+            }
+        }
+    }
+    for y in 0..side {
+        for x in 0..side {
+            let alpha = cover[(y * side + x) as usize];
+            if alpha > 0 {
+                over_pixel(pixels, size, x as u32, y as u32, [220, 227, 239], alpha);
+            }
+        }
+    }
+    true
+}
+
+fn over_pixel(pixels: &mut [u8], size: u32, x: u32, y: u32, color: [u8; 3], alpha: u8) {
+    if alpha == 0 || x >= size || y >= size {
+        return;
+    }
+    let index = ((y * size + x) * 4) as usize;
+    let alpha = alpha as u16;
+    let inverse = 255 - alpha;
+    for channel in 0..3 {
+        let ink = color[channel] as u16 * alpha / 255;
+        let under = pixels[index + channel] as u16;
+        pixels[index + channel] = (ink + under * inverse / 255) as u8;
+    }
+    let under = pixels[index + 3] as u16;
+    pixels[index + 3] = (alpha + under * inverse / 255) as u8;
+}
+
 fn scale(px: i32, dpi: i32) -> i32 {
     px * dpi / 96
 }
@@ -1226,40 +3626,208 @@ unsafe fn screen_dpi() -> i32 {
     let hdc = GetDC(std::ptr::null_mut());
     let dpi = GetDeviceCaps(hdc, LOGPIXELSX as i32);
     ReleaseDC(std::ptr::null_mut(), hdc);
-    if dpi <= 0 { 96 } else { dpi }
+    if dpi <= 0 {
+        96
+    } else {
+        dpi
+    }
 }
 
-fn write_state(kind: &str, left: Option<u32>, plan: &str, fail_code: Option<u16>, focus: &str, week_left: Option<u32>) {
-    let plan: String = plan.chars().filter(|ch| !ch.is_control()).take(40).collect();
-    let focus: String = focus.chars().filter(|ch| !ch.is_control()).take(20).collect();
+fn write_state(
+    kind: &str,
+    left: Option<u32>,
+    plan: &str,
+    fail_code: Option<u16>,
+    focus: &str,
+    week_left: Option<u32>,
+) {
+    let plan: String = plan
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(40)
+        .collect();
+    let focus: String = focus
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(20)
+        .collect();
     let body = if kind == "ready" {
-        let week = week_left.map(|value| format!("week={value}\n")).unwrap_or_default();
-        format!("state=ready\nleft={}\nplan={plan}\nfocus={focus}\n{week}", left.unwrap_or(0))
+        let week = week_left
+            .map(|value| format!("week={value}\n"))
+            .unwrap_or_default();
+        format!(
+            "state=ready\nleft={}\nplan={plan}\nfocus={focus}\n{week}",
+            left.unwrap_or(0)
+        )
     } else if let Some(code) = fail_code {
         format!("state={kind}\ncode={code}\n")
     } else {
         format!("state={kind}\n")
     };
-    let Ok(exe) = std::env::current_exe() else {
+    let Some(path) = data_file("state.txt") else {
         return;
     };
-    let Some(dir) = exe.parent() else {
-        return;
-    };
-    let _ = std::fs::write(dir.join("state.txt"), body);
+    let _ = std::fs::write(path, body);
 }
 
-fn remember_login() {
+fn legacy_beside(name: &str) -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join(name))
+}
+
+/// User data lives under LocalAppData. An older file beside the exe is copied once and left in place.
+fn isolated_now() -> bool {
+    ISOLATED.load(Ordering::Relaxed)
+}
+
+fn profile_root() -> Option<std::path::PathBuf> {
+    if let Ok(slot) = PROFILE_OVERRIDE.lock() {
+        if let Some(path) = slot.clone() {
+            return Some(path);
+        }
+    }
+    let local = std::env::var("LOCALAPPDATA").ok()?;
+    Some(crate::settings::profile_dir(
+        std::path::Path::new(&local),
+        isolated_now(),
+    ))
+}
+
+fn data_file(name: &str) -> Option<std::path::PathBuf> {
+    let preferred = profile_root().and_then(|root| {
+        let dir = root.join("data");
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    });
+    if let Some(path) = preferred {
+        if !path.exists() && !isolated_now() {
+            if let Some(old) = legacy_beside(name) {
+                if old.is_file() && old != path {
+                    let _ = std::fs::copy(&old, &path);
+                }
+            }
+        }
+        return Some(path);
+    }
+    if isolated_now() {
+        None
+    } else {
+        legacy_beside(name)
+    }
+}
+
+fn settle_home() {
+    let Ok(current) = std::env::current_exe() else {
+        return;
+    };
+    let Ok(local) = std::env::var("LOCALAPPDATA") else {
+        return;
+    };
+    let home = usage::home_exe(std::path::Path::new(&local));
+    if usage::already_home(&current, &home) {
+        return;
+    }
+    if let Some(parent) = home.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    if std::fs::copy(&current, &home).is_err() {
+        return;
+    }
+    if std::process::Command::new(&home).spawn().is_ok() {
+        std::process::exit(0);
+    }
+}
+
+fn trust_path() -> Option<std::path::PathBuf> {
+    data_file("trust.txt")
+}
+
+fn trust_seen() -> bool {
+    if TRUST_LOADED.load(Ordering::Relaxed) {
+        return TRUST_SEEN.load(Ordering::Relaxed);
+    }
+    let seen = trust_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|text| text.lines().any(|line| line.trim() == "seen=1"));
+    TRUST_SEEN.store(seen, Ordering::Relaxed);
+    TRUST_LOADED.store(true, Ordering::Relaxed);
+    seen
+}
+
+fn mark_trust_seen() {
+    TRUST_SEEN.store(true, Ordering::Relaxed);
+    TRUST_LOADED.store(true, Ordering::Relaxed);
+    let Some(path) = trust_path() else {
+        return;
+    };
+    let _ = std::fs::write(path, "seen=1\n");
+}
+
+fn run_key_sub() -> Vec<u16> {
+    wide(r"Software\Microsoft\Windows\CurrentVersion\Run")
+}
+
+fn forget_tray_left() {
+    let sub = run_key_sub();
+    let old_name = wide("TrayLeft");
+    unsafe {
+        let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, sub.as_ptr(), old_name.as_ptr());
+    }
+}
+
+fn run_key_text() -> Option<String> {
+    let sub = run_key_sub();
+    let name = wide("Jusage");
+    let mut bytes = [0u16; 520];
+    let mut size = (bytes.len() * 2) as u32;
+    let mut kind = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            sub.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_SZ,
+            &mut kind,
+            bytes.as_mut_ptr() as *mut c_void,
+            &mut size,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    let chars = (size as usize / 2).saturating_sub(1).min(bytes.len());
+    let text = String::from_utf16_lossy(&bytes[..chars]);
+    let text = text
+        .trim_matches('"')
+        .trim()
+        .trim_end_matches('\u{0}')
+        .to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn write_run_key() {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let path = exe.to_string_lossy();
-    let sub = wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
+    let path = exe.to_string_lossy().to_string();
+    if run_key_text().is_some_and(|have| have.eq_ignore_ascii_case(&path)) {
+        return;
+    }
+    let stored = if path.contains(' ') {
+        format!("\"{path}\"")
+    } else {
+        path
+    };
+    let sub = run_key_sub();
     let name = wide("Jusage");
-    let old_name = wide("TrayLeft");
-    let value = wide(&path);
+    let value = wide(&stored);
     unsafe {
-        let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, sub.as_ptr(), old_name.as_ptr());
         let _ = RegSetKeyValueW(
             HKEY_CURRENT_USER,
             sub.as_ptr(),
@@ -1268,6 +3836,318 @@ fn remember_login() {
             value.as_ptr() as *const c_void,
             (value.len() * 2) as u32,
         );
+    }
+}
+
+fn delete_run_key() {
+    let sub = run_key_sub();
+    let name = wide("Jusage");
+    unsafe {
+        let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, sub.as_ptr(), name.as_ptr());
+    }
+}
+
+fn settings_file_path() -> Option<std::path::PathBuf> {
+    Some(profile_root()?.join("settings.txt"))
+}
+
+fn read_settings_file() -> Option<crate::settings::Settings> {
+    let text = std::fs::read_to_string(settings_file_path()?).ok()?;
+    Some(crate::settings::parse_settings(&text))
+}
+
+fn save_settings_file(settings: &crate::settings::Settings) -> bool {
+    let Some(path) = settings_file_path() else {
+        return false;
+    };
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+    }
+    std::fs::write(path, crate::settings::format_settings(settings)).is_ok()
+}
+
+/// The first settings file only records whether startup is already on. It does not create the run key.
+fn ensure_config() -> bool {
+    if CONFIG.lock().ok().is_some_and(|slot| slot.is_some()) {
+        return false;
+    }
+    let (settings, created) = if let Some(settings) = read_settings_file() {
+        (settings, false)
+    } else {
+        let mut settings = crate::settings::Settings::default();
+        settings.autostart = crate::settings::initial_autostart(run_key_text().is_some());
+        let created = save_settings_file(&settings);
+        (settings, created)
+    };
+    if let Ok(mut slot) = CONFIG.lock() {
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(settings);
+    }
+    created
+}
+
+fn boot_autostart() {
+    forget_tray_left();
+    let created = ensure_config();
+    if created {
+        return;
+    }
+    match crate::settings::autostart_action(config().autostart) {
+        crate::settings::AutostartAction::Leave => {}
+        crate::settings::AutostartAction::Disable => delete_run_key(),
+        crate::settings::AutostartAction::Enable => {
+            if run_key_text().is_none() {
+                write_run_key();
+            }
+        }
+    }
+}
+
+fn apply_autostart(pref: crate::settings::AutostartPref) {
+    if !crate::settings::startup_guard(isolated_now()).touch_registry {
+        return;
+    }
+    match crate::settings::autostart_action(pref) {
+        crate::settings::AutostartAction::Leave => {}
+        crate::settings::AutostartAction::Enable => write_run_key(),
+        crate::settings::AutostartAction::Disable => delete_run_key(),
+    }
+}
+
+fn config() -> crate::settings::Settings {
+    let _ = ensure_config();
+    CONFIG
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_default()
+}
+
+fn update_config(mut change: impl FnMut(&mut crate::settings::Settings)) {
+    let _ = ensure_config();
+    let next = {
+        let Ok(mut slot) = CONFIG.lock() else {
+            return;
+        };
+        let settings = slot.get_or_insert_with(crate::settings::Settings::default);
+        change(settings);
+        settings.clone()
+    };
+    let _ = save_settings_file(&next);
+}
+
+fn source_signature() -> String {
+    let cfg = config();
+    let source = match cfg.source {
+        crate::settings::Source::Windows => "windows",
+        crate::settings::Source::Wsl => "wsl",
+    };
+    format!("{source}|{}|{}", cfg.distro, cfg.codex_home)
+}
+
+fn shown_focus(snapshot: &Snapshot) -> Reading {
+    let choice = match config().focus {
+        crate::settings::FocusPref::Session => "session",
+        crate::settings::FocusPref::Week => "week",
+        crate::settings::FocusPref::Auto => "auto",
+    };
+    usage::focus_choice(snapshot, choice)
+}
+
+fn theme_is_light() -> bool {
+    match config().theme {
+        crate::settings::ThemePref::Light => true,
+        crate::settings::ThemePref::Dark => false,
+        crate::settings::ThemePref::System => system_is_light(),
+    }
+}
+
+fn drop_cached_number() {
+    if let Ok(mut last) = LAST.lock() {
+        *last = None;
+    }
+    if let Ok(mut sig) = LAST_SIG.lock() {
+        sig.clear();
+    }
+    FRESH_AT.store(0, Ordering::Relaxed);
+    clear_notice();
+}
+
+fn distro_names() -> Vec<String> {
+    DISTROS
+        .lock()
+        .ok()
+        .map(|slot| slot.clone())
+        .unwrap_or_default()
+}
+
+fn spawn_distro_reload() {
+    std::thread::spawn(|| {
+        reload_distros();
+        let hwnd = HWND_SLOT.load(Ordering::SeqCst) as HWND;
+        if !hwnd.is_null() {
+            unsafe {
+                let _ = PostMessageW(hwnd, REFRESH_MSG, 0, 0);
+            }
+        }
+    });
+}
+
+fn reload_distros() {
+    let names = list_wsl_distros();
+    if let Ok(mut slot) = DISTROS.lock() {
+        *slot = names;
+    }
+}
+
+fn list_wsl_distros() -> Vec<String> {
+    crate::settings::parse_wsl_list(&command_bytes(&["-l", "-q"]))
+}
+
+fn command_bytes(args: &[&str]) -> Vec<u8> {
+    let mut child = match std::process::Command::new("wsl.exe")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return Vec::new(),
+    };
+    let mut stdout = child.stdout.take();
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let mut buf = Vec::new();
+                if let Some(pipe) = stdout.as_mut() {
+                    use std::io::Read;
+                    let _ = pipe.read_to_end(&mut buf);
+                }
+                return buf;
+            }
+            Ok(None) if start.elapsed() < Duration::from_secs(8) => {
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Vec::new();
+            }
+        }
+    }
+}
+
+fn wake_distro(name: &str) {
+    let Some(name) = crate::settings::safe_distro(name) else {
+        return;
+    };
+    let _ = command_bytes(&["-d", &name, "--exec", "/bin/true"]);
+}
+
+enum WslProbe {
+    Found(std::path::PathBuf),
+    Reachable,
+    Missing,
+}
+
+fn wsl_codex_in(distro: &str) -> WslProbe {
+    let Some(distro) = crate::settings::safe_distro(distro) else {
+        return WslProbe::Missing;
+    };
+    let root = std::path::PathBuf::from(format!(r"\\wsl$\{distro}"));
+    if !root.is_dir() {
+        return WslProbe::Missing;
+    }
+    let direct = root.join("root").join(".codex");
+    if direct.join("auth.json").is_file() {
+        return WslProbe::Found(direct);
+    }
+    let home = root.join("home");
+    if let Ok(entries) = std::fs::read_dir(&home) {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join(".codex");
+            if candidate.join("auth.json").is_file() {
+                return WslProbe::Found(candidate);
+            }
+        }
+    }
+    WslProbe::Reachable
+}
+
+fn find_wsl_codex(preferred: &str) -> Result<std::path::PathBuf, &'static str> {
+    let names = if let Some(name) = crate::settings::safe_distro(preferred) {
+        vec![name]
+    } else {
+        let listed = list_wsl_distros();
+        if let Ok(mut slot) = DISTROS.lock() {
+            *slot = listed.clone();
+        }
+        if listed.is_empty() {
+            return Err("WSL 배포판을 찾지 못했어요. 설정에서 배포판을 골라 주세요.");
+        }
+        listed
+    };
+    let mut reachable = false;
+    for name in &names {
+        match wsl_codex_in(name) {
+            WslProbe::Found(path) => {
+                if preferred.is_empty() {
+                    let chosen = name.clone();
+                    update_config(|cfg| {
+                        if cfg.distro.is_empty() {
+                            cfg.distro = chosen.clone();
+                        }
+                    });
+                }
+                return Ok(path);
+            }
+            WslProbe::Reachable => reachable = true,
+            WslProbe::Missing => {}
+        }
+    }
+    if !reachable {
+        if let Some(name) = names.first() {
+            wake_distro(name);
+            match wsl_codex_in(name) {
+                WslProbe::Found(path) => return Ok(path),
+                WslProbe::Reachable => return Err("WSL에서 Codex 로그인을 찾지 못했어요."),
+                WslProbe::Missing => {}
+            }
+        }
+        return Err("WSL에 접근하지 못했어요. WSL을 켠 뒤 다시 확인해 주세요.");
+    }
+    Err("WSL에서 Codex 로그인을 찾지 못했어요.")
+}
+
+fn current_home() -> Result<std::path::PathBuf, &'static str> {
+    let cfg = config();
+    if !cfg.codex_home.is_empty() {
+        if cfg.codex_home.starts_with('/') {
+            let distro = crate::settings::safe_distro(&cfg.distro)
+                .ok_or("WSL 배포판을 찾지 못했어요. 설정에서 배포판을 골라 주세요.")?;
+            let unc = crate::settings::linux_to_unc(&distro, &cfg.codex_home)
+                .ok_or("경로를 읽지 못했어요.")?;
+            let path = std::path::PathBuf::from(unc);
+            if path.is_dir() {
+                return Ok(path);
+            }
+            return Err("경로를 읽지 못했어요.");
+        }
+        let path = std::path::PathBuf::from(&cfg.codex_home);
+        if path.is_dir() {
+            return Ok(path);
+        }
+        return Err("경로를 읽지 못했어요.");
+    }
+    match cfg.source {
+        crate::settings::Source::Windows => Ok(usage::codex_home()),
+        crate::settings::Source::Wsl => find_wsl_codex(&cfg.distro),
     }
 }
 
@@ -1296,7 +4176,14 @@ fn promote_icon() {
     unsafe {
         let path = wide(r"Control Panel\NotifyIconSettings");
         let mut root: HKEY = std::ptr::null_mut();
-        if RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, KEY_READ | KEY_ENUMERATE_SUB_KEYS, &mut root) != 0 {
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            path.as_ptr(),
+            0,
+            KEY_READ | KEY_ENUMERATE_SUB_KEYS,
+            &mut root,
+        ) != 0
+        {
             return;
         }
         let mut index = 0u32;
@@ -1318,13 +4205,27 @@ fn promote_icon() {
             }
             index += 1;
             let mut sub: HKEY = std::ptr::null_mut();
-            if RegOpenKeyExW(root, name.as_ptr(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &mut sub) != 0 {
+            if RegOpenKeyExW(
+                root,
+                name.as_ptr(),
+                0,
+                KEY_QUERY_VALUE | KEY_SET_VALUE,
+                &mut sub,
+            ) != 0
+            {
                 continue;
             }
             if exe_matches(sub, &needle) {
                 let one = 1u32;
                 let value_name = wide("IsPromoted");
-                let _ = RegSetValueExW(sub, value_name.as_ptr(), 0, REG_DWORD, &one as *const u32 as *const u8, 4);
+                let _ = RegSetValueExW(
+                    sub,
+                    value_name.as_ptr(),
+                    0,
+                    REG_DWORD,
+                    &one as *const u32 as *const u8,
+                    4,
+                );
             }
             RegCloseKey(sub);
         }
@@ -1349,7 +4250,9 @@ unsafe fn exe_matches(key: HKEY, needle: &str) -> bool {
     {
         return false;
     }
-    String::from_utf16_lossy(&bytes).to_ascii_lowercase().contains(needle)
+    String::from_utf16_lossy(&bytes)
+        .to_ascii_lowercase()
+        .contains(needle)
 }
 
 fn motion_offset() -> i32 {
@@ -1369,33 +4272,97 @@ fn icon_px() -> u32 {
 }
 
 fn palette_now() -> Palette {
-    if system_is_light() {
+    if theme_is_light() {
         Palette {
             light: true,
-            ink: 0x00171717,
-            muted: 0x005A5A5A,
-            button: 0x00171717,
-            button_hover: 0x00323232,
-            button_text: 0x00FFFFFF,
-            soft: 0x00E8E6E2,
-            plate: [255, 255, 255, 188],
-            tile: [255, 255, 255, 130],
-            inset: [255, 255, 255, 168],
-            track: [24, 24, 24, 28],
+            ink: crate::look::LIGHT_INK.colorref(),
+            muted: crate::look::LIGHT_MUTED.colorref(),
+            soft: 0x00F0_E2D9,
+            depth: [
+                crate::look::LIGHT_DEPTH.r,
+                crate::look::LIGHT_DEPTH.g,
+                crate::look::LIGHT_DEPTH.b,
+                255,
+            ],
+            plate: [
+                crate::look::LIGHT_PLATE.r,
+                crate::look::LIGHT_PLATE.g,
+                crate::look::LIGHT_PLATE.b,
+                255,
+            ],
+            card: [255, 255, 255, 255],
+            edge: [
+                crate::look::MUTED.r,
+                crate::look::MUTED.g,
+                crate::look::MUTED.b,
+                180,
+            ],
+            hot: [
+                crate::look::LIGHT_MUTED.r,
+                crate::look::LIGHT_MUTED.g,
+                crate::look::LIGHT_MUTED.b,
+                160,
+            ],
+            hover: [0xE4, 0xEB, 0xF5, 236],
+            track: [0xD5, 0xDC, 0xEA, 255],
+            line: [
+                crate::look::EDGE.r,
+                crate::look::EDGE.g,
+                crate::look::EDGE.b,
+                70,
+            ],
+            charge: crate::look::LIGHT_CHARGE.rgb(),
         }
     } else {
         Palette {
             light: false,
-            ink: 0x00F0F2F2,
-            muted: 0x00A8A8A0,
-            button: 0x00F4F4F1,
-            button_hover: 0x00FFFFFF,
-            button_text: 0x00141414,
-            soft: 0x00323A42,
-            plate: [18, 20, 24, 206],
-            tile: [255, 255, 255, 22],
-            inset: [28, 32, 38, 220],
-            track: [255, 255, 255, 32],
+            ink: crate::look::INK.colorref(),
+            muted: crate::look::MUTED.colorref(),
+            soft: 0x0064_483A,
+            depth: [
+                crate::look::DEPTH.r,
+                crate::look::DEPTH.g,
+                crate::look::DEPTH.b,
+                255,
+            ],
+            plate: [
+                crate::look::PLATE.r,
+                crate::look::PLATE.g,
+                crate::look::PLATE.b,
+                255,
+            ],
+            card: [
+                crate::look::CARD.r,
+                crate::look::CARD.g,
+                crate::look::CARD.b,
+                255,
+            ],
+            edge: [
+                crate::look::EDGE.r,
+                crate::look::EDGE.g,
+                crate::look::EDGE.b,
+                170,
+            ],
+            hot: [
+                crate::look::MUTED.r,
+                crate::look::MUTED.g,
+                crate::look::MUTED.b,
+                210,
+            ],
+            hover: [0x3A, 0x48, 0x64, 236],
+            track: [
+                crate::look::DEPTH.r,
+                crate::look::DEPTH.g,
+                crate::look::DEPTH.b,
+                230,
+            ],
+            line: [
+                crate::look::EDGE.r,
+                crate::look::EDGE.g,
+                crate::look::EDGE.b,
+                80,
+            ],
+            charge: crate::look::DARK_CHARGE.rgb(),
         }
     }
 }
@@ -1422,7 +4389,7 @@ fn system_is_light() -> bool {
 
 fn focus_left(view: &View) -> Option<i32> {
     match view {
-        View::Ready(snapshot) => Some(usage::focus_reading(snapshot).remaining as i32),
+        View::Ready(snapshot) => Some(shown_focus(snapshot).remaining as i32),
         _ => None,
     }
 }
@@ -1457,13 +4424,16 @@ fn arm_count(visible: bool) -> bool {
         return false;
     }
     let shown = SHOWN.load(Ordering::Relaxed);
-    let current = COUNT.lock().map(|count| {
-        if count.to >= 0 {
-            usage::ease_count(count.from, count.to, count.tick, COUNT_FRAMES)
-        } else {
-            shown
-        }
-    }).unwrap_or(shown);
+    let current = COUNT
+        .lock()
+        .map(|count| {
+            if count.to >= 0 {
+                usage::ease_count(count.from, count.to, count.tick, COUNT_FRAMES)
+            } else {
+                shown
+            }
+        })
+        .unwrap_or(shown);
     if current < 0 || current == target {
         if let Ok(mut count) = COUNT.lock() {
             count.from = target;
@@ -1502,7 +4472,11 @@ fn begin_open_count() {
 }
 
 fn color_rgb(color: u32) -> [u8; 3] {
-    [(color & 0xff) as u8, ((color >> 8) & 0xff) as u8, ((color >> 16) & 0xff) as u8]
+    [
+        (color & 0xff) as u8,
+        ((color >> 8) & 0xff) as u8,
+        ((color >> 16) & 0xff) as u8,
+    ]
 }
 
 fn clear_delta() {
@@ -1512,22 +4486,127 @@ fn clear_delta() {
 }
 
 fn note_change(snapshot: &Snapshot) {
-    let focus = usage::focus_reading(snapshot);
+    let focus = shown_focus(snapshot);
     let key = match focus.pane {
         Pane::Session => "session",
         Pane::Week => "week",
     };
     let now = now_unix();
-    let line = read_memory().and_then(|previous| {
+    let today = local_civil(now)
+        .map(|time| format!("{:04}-{:02}-{:02}", time.year, time.month, time.day))
+        .unwrap_or_default();
+    let restarted = usage::cycle_restarted(&read_cycle(), key, focus.remaining);
+    let previous = read_memory();
+    let recent = if restarted {
+        None
+    } else {
+        previous.as_ref().and_then(|previous| {
+            if previous.key != key {
+                return None;
+            }
+            usage::change_line(
+                now.saturating_sub(previous.at),
+                previous.left,
+                focus.remaining,
+            )
+        })
+    };
+    let recent_base = previous.and_then(|previous| {
         if previous.key != key {
-            return None;
+            None
+        } else {
+            Some(previous.left)
         }
-        usage::change_line(now.saturating_sub(previous.at), previous.left, focus.remaining)
     });
     write_memory(key, focus.remaining, now);
-    if let Ok(mut slot) = DELTA.lock() {
-        *slot = line.unwrap_or_default();
+    let mut open = read_day()
+        .and_then(|mark| {
+            if mark.day == today && mark.pane == key {
+                Some(mark.open)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(focus.remaining);
+    if restarted {
+        open = focus.remaining;
     }
+    if !today.is_empty() {
+        write_day(&today, key, open);
+        remember_days(key, &today, open, focus.remaining, restarted);
+    }
+    remember_pace(key, now, focus.remaining);
+    remember_cycle(key, focus.remaining);
+    let (_day, recent) = if today.is_empty() {
+        (String::new(), recent.unwrap_or_default())
+    } else {
+        usage::account_moves(open, focus.remaining, recent_base, recent)
+    };
+    if let Ok(mut slot) = DELTA.lock() {
+        *slot = recent;
+    }
+}
+
+struct DayMark {
+    day: String,
+    pane: String,
+    open: u32,
+}
+
+fn day_path() -> Option<std::path::PathBuf> {
+    data_file("day.txt")
+}
+
+fn read_day() -> Option<DayMark> {
+    let text = std::fs::read_to_string(day_path()?).ok()?;
+    let mut day = String::new();
+    let mut pane = String::new();
+    let mut open = None;
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("day=") {
+            day = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("pane=") {
+            pane = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("open=") {
+            open = value.trim().parse().ok();
+        }
+    }
+    if day.is_empty() || pane.is_empty() {
+        return None;
+    }
+    Some(DayMark {
+        day,
+        pane,
+        open: open?,
+    })
+}
+
+fn days_path() -> Option<std::path::PathBuf> {
+    data_file("days.txt")
+}
+
+fn read_days() -> String {
+    days_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default()
+}
+
+fn remember_days(pane: &str, date: &str, open: u32, close: u32, restarted: bool) {
+    let Some(path) = days_path() else {
+        return;
+    };
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let Some(next) = usage::day_record(&existing, pane, date, open, close, restarted) else {
+        return;
+    };
+    let _ = std::fs::write(path, next);
+}
+
+fn write_day(day: &str, pane: &str, open: u32) {
+    let Some(path) = day_path() else {
+        return;
+    };
+    let _ = std::fs::write(path, format!("day={day}\npane={pane}\nopen={open}\n"));
 }
 
 struct SavedNumber {
@@ -1537,8 +4616,7 @@ struct SavedNumber {
 }
 
 fn memory_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("last.txt"))
+    data_file("last.txt")
 }
 
 fn read_memory() -> Option<SavedNumber> {
@@ -1555,7 +4633,11 @@ fn read_memory() -> Option<SavedNumber> {
             at = value.trim().parse().ok();
         }
     }
-    Some(SavedNumber { key, left: left?, at: at? })
+    Some(SavedNumber {
+        key,
+        left: left?,
+        at: at?,
+    })
 }
 
 fn write_memory(key: &str, left: u32, at: i64) {
@@ -1563,6 +4645,50 @@ fn write_memory(key: &str, left: u32, at: i64) {
         return;
     };
     let _ = std::fs::write(path, format!("pane={key}\nleft={left}\nat={at}\n"));
+}
+
+fn pace_path() -> Option<std::path::PathBuf> {
+    data_file("pace.txt")
+}
+
+fn remember_pace(pane: &str, now: i64, left: u32) {
+    let Some(path) = pace_path() else {
+        return;
+    };
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let Some(next) = usage::pace_record(&existing, pane, now, left) else {
+        return;
+    };
+    let _ = std::fs::write(path, next);
+}
+
+fn cycle_path() -> Option<std::path::PathBuf> {
+    data_file("cycle.txt")
+}
+
+fn read_cycle() -> String {
+    cycle_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default()
+}
+
+fn remember_cycle(pane: &str, remaining: u32) {
+    let Some(path) = cycle_path() else {
+        return;
+    };
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let Some(next) = usage::cycle_update(&existing, pane, remaining) else {
+        return;
+    };
+    let _ = std::fs::write(path, next);
+}
+
+fn pace_for(pane: &str) -> Vec<(i64, u32)> {
+    let Some(path) = pace_path() else {
+        return Vec::new();
+    };
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    usage::pace_rows(&text, pane)
 }
 
 fn enable_glass(hwnd: HWND) {
@@ -1581,7 +4707,12 @@ fn enable_glass(hwnd: HWND) {
     }
 }
 
-unsafe fn blend_round(dest: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, radius: i32, rgba: [u8; 4], sheen: bool) {
+unsafe fn blend_round(
+    dest: windows_sys::Win32::Graphics::Gdi::HDC,
+    spot: Spot,
+    radius: i32,
+    rgba: [u8; 4],
+) {
     if spot.w <= 1 || spot.h <= 1 {
         return;
     }
@@ -1595,20 +4726,7 @@ unsafe fn blend_round(dest: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, 
             if cover <= 0.0 {
                 continue;
             }
-            let (mut red, mut green, mut blue, mut alpha) = (rgba[0], rgba[1], rgba[2], rgba[3]);
-            if sheen && y < 22 {
-                let lift = ((22 - y) as u16 * 3).min(70) as u8;
-                red = red.saturating_add(lift);
-                green = green.saturating_add(lift);
-                blue = blue.saturating_add(lift);
-                alpha = alpha.saturating_add(lift / 3);
-            }
-            if cover < 0.9 {
-                red = 255;
-                green = 255;
-                blue = 255;
-                alpha = (200.0 * cover) as u8;
-            }
+            let (red, green, blue, alpha) = (rgba[0], rgba[1], rgba[2], rgba[3]);
             let alpha = (alpha as f32 * cover.min(1.0)) as u8;
             let index = ((y * width + x) * 4) as usize;
             pixels[index] = premul(blue, alpha);
@@ -1616,6 +4734,13 @@ unsafe fn blend_round(dest: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, 
             pixels[index + 2] = premul(red, alpha);
             pixels[index + 3] = alpha;
         }
+    }
+    blend_pixels(dest, spot, &pixels);
+}
+
+unsafe fn blend_pixels(dest: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, pixels: &[u8]) {
+    if spot.w <= 1 || spot.h <= 1 || pixels.len() < (spot.w as usize) * (spot.h as usize) * 4 {
+        return;
     }
     let bmi = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
@@ -1630,7 +4755,14 @@ unsafe fn blend_round(dest: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, 
         ..BITMAPINFO::default()
     };
     let mut bits = std::ptr::null_mut();
-    let bitmap = CreateDIBSection(dest, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+    let bitmap = CreateDIBSection(
+        dest,
+        &bmi,
+        DIB_RGB_COLORS,
+        &mut bits,
+        std::ptr::null_mut(),
+        0,
+    );
     if bitmap.is_null() || bits.is_null() {
         return;
     }
@@ -1643,7 +4775,9 @@ unsafe fn blend_round(dest: windows_sys::Win32::Graphics::Gdi::HDC, spot: Spot, 
         SourceConstantAlpha: 255,
         AlphaFormat: AC_SRC_ALPHA as u8,
     };
-    AlphaBlend(dest, spot.x, spot.y, spot.w, spot.h, source, 0, 0, spot.w, spot.h, blend);
+    AlphaBlend(
+        dest, spot.x, spot.y, spot.w, spot.h, source, 0, 0, spot.w, spot.h, blend,
+    );
     SelectObject(source, old);
     DeleteObject(bitmap as HGDIOBJ);
     DeleteDC(source);
@@ -1674,4 +4808,617 @@ unsafe fn set_process_dpi() -> i32 {
     windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
         windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     )
+}
+
+struct ShotNote {
+    name: &'static str,
+    ok: bool,
+    width: i32,
+    height: i32,
+    failure: Option<PreviewFailure>,
+}
+
+unsafe fn render_previews(dir: &std::path::Path) -> Result<(), PreviewFailure> {
+    let _ = set_process_dpi();
+    let started = Instant::now();
+    let screen = screen_dpi();
+    if let Ok(mut slot) = CONFIG.lock() {
+        *slot = Some(crate::settings::Settings {
+            source: crate::settings::Source::Windows,
+            distro: String::new(),
+            codex_home: String::new(),
+            focus: crate::settings::FocusPref::Auto,
+            autostart: crate::settings::AutostartPref::Off,
+            theme: crate::settings::ThemePref::Dark,
+        });
+    }
+    TRUST_SEEN.store(true, Ordering::Relaxed);
+    TRUST_LOADED.store(true, Ordering::Relaxed);
+    DETAIL_OPEN.store(false, Ordering::Relaxed);
+    SETTINGS_OPEN.store(false, Ordering::Relaxed);
+    if let Ok(mut notice) = NOTICE.lock() {
+        notice.clear();
+    }
+    let now = now_unix();
+    FRESH_AT.store(now.saturating_sub(5), Ordering::Relaxed);
+    let week = mock_week(now);
+    let both = mock_both(now);
+    let mut shots = Vec::new();
+    shots.push(preview_scene(
+        dir,
+        "dark-ready.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-ready.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        true,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dark-two.bmp",
+        &View::Ready(both.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-two.bmp",
+        &View::Ready(both.clone()),
+        96,
+        false,
+        false,
+        true,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dpi-100.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dpi-125.bmp",
+        &View::Ready(week.clone()),
+        120,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dpi-150.bmp",
+        &View::Ready(week.clone()),
+        144,
+        false,
+        false,
+        false,
+    ));
+    FRESH_AT.store(now.saturating_sub(700), Ordering::Relaxed);
+    shots.push(preview_scene(
+        dir,
+        "dark-stale.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-stale.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        true,
+    ));
+    FRESH_AT.store(now.saturating_sub(5), Ordering::Relaxed);
+    if let Ok(mut notice) = NOTICE.lock() {
+        *notice = crate::settings::fail_note(1).to_string();
+    }
+    shots.push(preview_scene(
+        dir,
+        "dark-error.bmp",
+        &View::Failed(1),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-error.bmp",
+        &View::Failed(1),
+        96,
+        false,
+        false,
+        true,
+    ));
+    if let Ok(mut notice) = NOTICE.lock() {
+        notice.clear();
+    }
+    shots.push(preview_scene(
+        dir,
+        "dark-login.bmp",
+        &View::NeedLogin,
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-login.bmp",
+        &View::NeedLogin,
+        96,
+        false,
+        false,
+        true,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dark-settings.bmp",
+        &View::Ready(week.clone()),
+        96,
+        true,
+        false,
+        false,
+    ));
+    set_preview_source(true);
+    shots.push(preview_scene(
+        dir,
+        "light-settings-wsl.bmp",
+        &View::Ready(week.clone()),
+        96,
+        true,
+        false,
+        true,
+    ));
+    set_preview_source(false);
+    TRUST_SEEN.store(false, Ordering::Relaxed);
+    shots.push(preview_scene(
+        dir,
+        "dark-first.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    TRUST_SEEN.store(true, Ordering::Relaxed);
+    write_preview_history(now)?;
+    shots.push(preview_scene(
+        dir,
+        "dark-hint.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        false,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "dark-detail.bmp",
+        &View::Ready(week.clone()),
+        96,
+        false,
+        true,
+        false,
+    ));
+    shots.push(preview_scene(
+        dir,
+        "light-detail.bmp",
+        &View::Ready(both),
+        96,
+        false,
+        true,
+        true,
+    ));
+    for (name, size) in [
+        ("tray-16.bmp", 16),
+        ("tray-32.bmp", 32),
+        ("tray-16-x4.bmp", 16),
+    ] {
+        let failure = save_tray_icon(dir, name, size, 58)
+            .err()
+            .map(|error| error.in_scene(name));
+        let side = (if name.ends_with("x4.bmp") {
+            size * 4
+        } else {
+            size
+        }) as i32;
+        shots.push(ShotNote {
+            name,
+            ok: failure.is_none(),
+            width: side,
+            height: side,
+            failure,
+        });
+    }
+    let (working, peak) = working_set();
+    let mut body = format!(
+        "mode=preview\nscreen_dpi={screen}\nworking_set={working}\npeak_working_set={peak}\nelapsed_ms={}\ncopy_home=false\nregistry=false\n",
+        started.elapsed().as_millis()
+    );
+    for shot in &shots {
+        body.push_str(&format!(
+            "{} ok={} {}x{}\n",
+            shot.name, shot.ok as u8, shot.width, shot.height
+        ));
+    }
+    write_preview_measure(&dir.join("measure.txt"), &body)?;
+    if let Some(failure) = shots.iter().find_map(|shot| shot.failure) {
+        return Err(failure);
+    }
+    Ok(())
+}
+
+fn mock_week(now: i64) -> Snapshot {
+    Snapshot {
+        plan: "Pro 100".into(),
+        session_used: 42.0,
+        weekly_used: None,
+        session_reset_at: Some(now + 3 * 3600 + 12 * 60),
+        session_reset_after: None,
+        session_window_seconds: Some(7 * 24 * 3600),
+        weekly_window_seconds: None,
+        weekly_reset_at: None,
+        weekly_reset_after: None,
+    }
+}
+
+fn mock_both(now: i64) -> Snapshot {
+    Snapshot {
+        plan: "Plus".into(),
+        session_used: 42.0,
+        weekly_used: Some(18.0),
+        session_reset_at: Some(now + 2 * 3600 + 5 * 60),
+        session_reset_after: None,
+        session_window_seconds: Some(5 * 3600),
+        weekly_window_seconds: Some(7 * 24 * 3600),
+        weekly_reset_at: Some(now + 2 * 24 * 3600),
+        weekly_reset_after: None,
+    }
+}
+
+fn set_preview_source(wsl: bool) {
+    let Ok(mut slot) = CONFIG.lock() else {
+        return;
+    };
+    let Some(cfg) = slot.as_mut() else {
+        return;
+    };
+    if wsl {
+        cfg.source = crate::settings::Source::Wsl;
+        cfg.distro = "Ubuntu".to_string();
+    } else {
+        cfg.source = crate::settings::Source::Windows;
+        cfg.distro.clear();
+    }
+}
+
+fn write_preview_history(now: i64) -> Result<(), PreviewFailure> {
+    let today = local_civil(now).ok_or(PreviewFailure::new(
+        38,
+        "resolve isolated preview history date",
+    ))?;
+    let today_key = format!("{:04}-{:02}-{:02}", today.year, today.month, today.day);
+    let mut days = String::new();
+    if let Some(day) = local_civil(now - 86_400) {
+        let key = format!("{:04}-{:02}-{:02}", day.year, day.month, day.day);
+        days.push_str(&format!("session {key} 80 70 70\n"));
+    }
+    if let Some(day) = local_civil(now - 2 * 86_400) {
+        let key = format!("{:04}-{:02}-{:02}", day.year, day.month, day.day);
+        days.push_str(&format!("session {key} 90 80 78\n"));
+    }
+    days.push_str(&format!("session {today_key} 70 58 58\n"));
+    for (name, body) in [
+        ("days.txt", days),
+        (
+            "day.txt",
+            format!("day={today_key}\npane=session\nopen=70\n"),
+        ),
+        ("cycle.txt", "session 0 80 58 58\n".to_string()),
+        (
+            "pace.txt",
+            format!("session {} 70\nsession {} 58\n", now - 3600, now - 120),
+        ),
+    ] {
+        let path = data_file(name).ok_or(PreviewFailure::new(
+            38,
+            "resolve isolated preview history path",
+        ))?;
+        std::fs::write(path, body)
+            .map_err(|_| PreviewFailure::new(39, "write isolated preview history"))?;
+    }
+    Ok(())
+}
+
+unsafe fn preview_scene(
+    dir: &std::path::Path,
+    name: &'static str,
+    view: &View,
+    dpi: i32,
+    settings: bool,
+    detail: bool,
+    light: bool,
+) -> ShotNote {
+    SETTINGS_OPEN.store(settings, Ordering::Relaxed);
+    DETAIL_OPEN.store(detail, Ordering::Relaxed);
+    if let Ok(mut slot) = CONFIG.lock() {
+        if let Some(cfg) = slot.as_mut() {
+            cfg.theme = if light {
+                crate::settings::ThemePref::Light
+            } else {
+                crate::settings::ThemePref::Dark
+            };
+        }
+    }
+    let card = card_for(view, dpi, i32::MAX);
+    let failure = paint_to_file(&dir.join(name), &card, dpi)
+        .err()
+        .map(|error| error.in_scene(name));
+    ShotNote {
+        name,
+        ok: failure.is_none(),
+        width: card.width,
+        height: card.height,
+        failure,
+    }
+}
+
+unsafe fn paint_to_file(
+    path: &std::path::Path,
+    card: &Card,
+    dpi: i32,
+) -> Result<(), PreviewFailure> {
+    if card.width <= 0 || card.height <= 0 {
+        return Err(PreviewFailure::new(
+            30,
+            "validate preview bitmap dimensions",
+        ));
+    }
+    let screen = GetDC(std::ptr::null_mut());
+    if screen.is_null() {
+        return Err(PreviewFailure::new(31, "acquire preview screen DC"));
+    }
+    let mem = CreateCompatibleDC(screen);
+    if mem.is_null() {
+        ReleaseDC(std::ptr::null_mut(), screen);
+        return Err(PreviewFailure::new(32, "create preview memory DC"));
+    }
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: card.width,
+            biHeight: -card.height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0,
+            ..BITMAPINFOHEADER::default()
+        },
+        ..BITMAPINFO::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    let bitmap = CreateDIBSection(
+        screen,
+        &info,
+        DIB_RGB_COLORS,
+        &mut bits,
+        std::ptr::null_mut(),
+        0,
+    );
+    if bitmap.is_null() || bits.is_null() {
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as HGDIOBJ);
+        }
+        DeleteDC(mem);
+        ReleaseDC(std::ptr::null_mut(), screen);
+        return Err(PreviewFailure::new(33, "create preview DIB section"));
+    }
+    let count = (card.width as usize) * (card.height as usize) * 4;
+    {
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u8, count);
+        for chunk in pixels.chunks_exact_mut(4) {
+            chunk[0] = 18;
+            chunk[1] = 16;
+            chunk[2] = 14;
+            chunk[3] = 255;
+        }
+    }
+    let old = SelectObject(mem, bitmap as HGDIOBJ);
+    if old.is_null() || old as isize == -1 {
+        DeleteObject(bitmap as HGDIOBJ);
+        DeleteDC(mem);
+        ReleaseDC(std::ptr::null_mut(), screen);
+        return Err(PreviewFailure::new(34, "select preview DIB section"));
+    }
+    paint_prepared(mem, card, dpi);
+    let copy = std::slice::from_raw_parts(bits as *const u8, count).to_vec();
+    SelectObject(mem, old);
+    DeleteObject(bitmap as HGDIOBJ);
+    DeleteDC(mem);
+    ReleaseDC(std::ptr::null_mut(), screen);
+    write_topdown_bgra_bmp(path, card.width, card.height, &copy)
+}
+
+fn save_tray_icon(
+    dir: &std::path::Path,
+    name: &'static str,
+    size: u32,
+    remaining: u32,
+) -> Result<(), PreviewFailure> {
+    let pixels = crate::icon::remaining_icon(size, remaining, [45, 212, 191], true);
+    let scaled = if name.ends_with("x4.bmp") {
+        scale_rgba(&pixels, size, 4)
+    } else {
+        rgba_to_bgra(&pixels)
+    };
+    let side = if name.ends_with("x4.bmp") {
+        size.saturating_mul(4)
+    } else {
+        size
+    };
+    write_topdown_bgra_bmp(&dir.join(name), side as i32, side as i32, &scaled)
+}
+
+fn rgba_to_bgra(pixels: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; pixels.len()];
+    let mut index = 0;
+    while index + 3 < pixels.len() {
+        out[index] = pixels[index + 2];
+        out[index + 1] = pixels[index + 1];
+        out[index + 2] = pixels[index];
+        out[index + 3] = pixels[index + 3];
+        index += 4;
+    }
+    out
+}
+
+fn scale_rgba(pixels: &[u8], size: u32, factor: u32) -> Vec<u8> {
+    let side = size.saturating_mul(factor);
+    let mut out = vec![0u8; (side * side * 4) as usize];
+    for y in 0..side {
+        for x in 0..side {
+            let src_x = x / factor;
+            let src_y = y / factor;
+            let from = ((src_y * size + src_x) * 4) as usize;
+            let to = ((y * side + x) * 4) as usize;
+            if from + 3 < pixels.len() && to + 3 < out.len() {
+                out[to] = pixels[from + 2];
+                out[to + 1] = pixels[from + 1];
+                out[to + 2] = pixels[from];
+                out[to + 3] = pixels[from + 3];
+            }
+        }
+    }
+    out
+}
+
+fn write_topdown_bgra_bmp(
+    path: &std::path::Path,
+    width: i32,
+    height: i32,
+    pixels: &[u8],
+) -> Result<(), PreviewFailure> {
+    if width <= 0 || height <= 0 {
+        return Err(PreviewFailure::new(
+            30,
+            "validate preview bitmap dimensions",
+        ));
+    }
+    let width_px = width as usize;
+    let height_px = height as usize;
+    let row = width_px * 4;
+    if pixels.len() < row * height_px {
+        return Err(PreviewFailure::new(30, "validate preview bitmap buffer"));
+    }
+    let image = (row * height_px) as u32;
+    let mut file = Vec::with_capacity(54 + image as usize);
+    file.extend_from_slice(b"BM");
+    file.extend_from_slice(&(54 + image).to_le_bytes());
+    file.extend_from_slice(&0u32.to_le_bytes());
+    file.extend_from_slice(&54u32.to_le_bytes());
+    file.extend_from_slice(&40u32.to_le_bytes());
+    file.extend_from_slice(&width.to_le_bytes());
+    file.extend_from_slice(&height.to_le_bytes());
+    file.extend_from_slice(&1u16.to_le_bytes());
+    file.extend_from_slice(&32u16.to_le_bytes());
+    file.extend_from_slice(&0u32.to_le_bytes());
+    file.extend_from_slice(&image.to_le_bytes());
+    file.extend_from_slice(&2835u32.to_le_bytes());
+    file.extend_from_slice(&2835u32.to_le_bytes());
+    file.extend_from_slice(&0u32.to_le_bytes());
+    file.extend_from_slice(&0u32.to_le_bytes());
+    for y in (0..height_px).rev() {
+        let start = y * row;
+        file.extend_from_slice(&pixels[start..start + row]);
+    }
+    std::fs::write(path, file).map_err(|_| PreviewFailure::new(36, "write preview bitmap"))
+}
+
+fn write_preview_measure(path: &std::path::Path, body: &str) -> Result<(), PreviewFailure> {
+    std::fs::write(path, body).map_err(|_| PreviewFailure::new(37, "write preview measure.txt"))
+}
+
+#[cfg(test)]
+mod preview_failure_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "jusage-preview-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn installed_profile_preview_path_is_refused_without_creation() {
+        let path = unique_temp("installed-profile").join("Jusage");
+        assert!(!path.exists());
+        let error = guarded_preview_dir(&path).unwrap_err();
+        assert_eq!(error.code, 22);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn bitmap_write_failure_has_a_nonzero_stage_code() {
+        let root = unique_temp("bitmap-write");
+        std::fs::create_dir_all(&root).unwrap();
+        let blocker = root.join("file-blocker");
+        std::fs::write(&blocker, "fixture").unwrap();
+        let error = write_topdown_bgra_bmp(&blocker.join("unwritable.bmp"), 1, 1, &[0, 0, 0, 255])
+            .unwrap_err();
+        assert_eq!(error.code, 36);
+        assert!(blocker.is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn measure_write_failure_has_a_nonzero_stage_code() {
+        let root = unique_temp("measure-write");
+        std::fs::create_dir_all(&root).unwrap();
+        let measure = root.join("measure.txt");
+        std::fs::create_dir(&measure).unwrap();
+        let error = write_preview_measure(&measure, "mode=preview\n").unwrap_err();
+        assert_eq!(error.code, 37);
+        assert!(measure.is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+unsafe fn working_set() -> (usize, usize) {
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut counters = std::mem::zeroed::<PROCESS_MEMORY_COUNTERS>();
+    counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    let ok = K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb);
+    if ok == 0 {
+        (0, 0)
+    } else {
+        (counters.WorkingSetSize, counters.PeakWorkingSetSize)
+    }
 }
