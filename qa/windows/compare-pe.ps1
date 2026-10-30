@@ -27,6 +27,32 @@ function Rva-Offset([uint32]$Rva, $Sections, [int]$HeadersSize) {
     if ($Rva -lt $HeadersSize) { return [int]$Rva }
     throw 'A PE data directory RVA is outside every section.'
 }
+function Compare-ByteRanges([byte[]]$First, [byte[]]$Second) {
+    $common = [Math]::Min($First.Length, $Second.Length)
+    $unequal = 0
+    $firstOffset = -1
+    $lastOffset = -1
+    $ranges = [Collections.Generic.List[string]]::new()
+    $rangeStart = -1
+    for ($index = 0; $index -lt $common; $index++) {
+        if ($First[$index] -eq $Second[$index]) {
+            if ($rangeStart -ge 0) {
+                $ranges.Add("$rangeStart-$($index - 1)")
+                $rangeStart = -1
+            }
+            continue
+        }
+        $unequal++
+        if ($rangeStart -lt 0) { $rangeStart = $index }
+        if ($firstOffset -lt 0) { $firstOffset = $index }
+        $lastOffset = $index
+    }
+    if ($rangeStart -ge 0) { $ranges.Add("$rangeStart-$($common - 1)") }
+    return [pscustomobject]@{
+        CommonLength = $common; UnequalBytes = $unequal
+        FirstOffset = $firstOffset; LastOffset = $lastOffset; Ranges = $ranges
+    }
+}
 
 function Read-Pe([string]$Path, [string]$Label) {
     [byte[]]$bytes = [IO.File]::ReadAllBytes($Path)
@@ -96,11 +122,17 @@ function Read-Pe([string]$Path, [string]$Label) {
             $dataPointer = [int](Read-U32 $bytes ($at + 24))
             $stamp = Read-U32 $bytes ($at + 4)
             $codeView = 'no'
+            $rsdsGuid = '-'
+            $rsdsAge = '-'
             $pdbLeaf = '-'
             $pdbPathHash = '-'
             if ($type -eq 2 -and $size -ge 25 -and $dataPointer -ge 0 -and $dataPointer + $size -le $bytes.Length -and
                 [Text.Encoding]::ASCII.GetString($bytes, $dataPointer, 4) -eq 'RSDS') {
                 $codeView = 'yes'
+                $guidBytes = New-Object byte[] 16
+                [Array]::Copy($bytes, $dataPointer + 4, $guidBytes, 0, 16)
+                $rsdsGuid = ([Guid]::new($guidBytes)).ToString('D')
+                $rsdsAge = Read-U32 $bytes ($dataPointer + 20)
                 $pathStart = $dataPointer + 24
                 $pathEnd = $pathStart
                 while ($pathEnd -lt ($dataPointer + $size) -and $bytes[$pathEnd] -ne 0) { $pathEnd++ }
@@ -110,7 +142,7 @@ function Read-Pe([string]$Path, [string]$Label) {
                     $pdbPathHash = Hash-Range $bytes $pathStart ($pathEnd - $pathStart)
                 }
             }
-            $debugRows += "type=$type timestamp=$('{0:X8}' -f $stamp) size=$size rsds=$codeView pdb_leaf=$pdbLeaf pdb_path_sha256=$pdbPathHash"
+            $debugRows += "type=$type timestamp=$('{0:X8}' -f $stamp) size=$size rsds=$codeView rsds_guid=$rsdsGuid rsds_age=$rsdsAge pdb_leaf=$pdbLeaf pdb_path_sha256=$pdbPathHash"
         }
     }
 
@@ -137,7 +169,7 @@ function Read-Pe([string]$Path, [string]$Label) {
         OptionalMagic = ('0x{0:X4}' -f $magic); LinkerVersion = $linkerVersion
         ImageSize = $imageSize; HeadersSize = $headersSize; CoffSymbolPointer = $symbolPointer
         CoffSymbolCount = $symbolCount; Sections = $sections; Directories = $directories
-        Debug = $debugRows; PathMarkers = $pathMarkers
+        Debug = $debugRows; PathMarkers = $pathMarkers; Bytes = $bytes
     }
 }
 
@@ -165,6 +197,24 @@ foreach ($name in @('.text', '.rdata', '.rsrc', '.pdata', '.reloc')) {
     if ($sectionA -or $sectionB) {
         $same = $sectionA -and $sectionB -and $sectionA.RawSize -eq $sectionB.RawSize -and $sectionA.Hash -eq $sectionB.Hash
         $lines.Add("compare_section=$name identical=$([bool]$same)")
+    }
+}
+$rsrcA = $a.Sections | Where-Object Name -eq '.rsrc' | Select-Object -First 1
+$rsrcB = $b.Sections | Where-Object Name -eq '.rsrc' | Select-Object -First 1
+if ($rsrcA -and $rsrcB) {
+    $rsrcBytesA = New-Object byte[] $rsrcA.RawSize
+    [Array]::Copy($a.Bytes, $rsrcA.RawPointer, $rsrcBytesA, 0, $rsrcA.RawSize)
+    $rsrcBytesB = New-Object byte[] $rsrcB.RawSize
+    [Array]::Copy($b.Bytes, $rsrcB.RawPointer, $rsrcBytesB, 0, $rsrcB.RawSize)
+    $rsrcDiff = Compare-ByteRanges $rsrcBytesA $rsrcBytesB
+    $firstOffset = if ($rsrcDiff.FirstOffset -ge 0) { $rsrcDiff.FirstOffset } else { '-' }
+    $lastOffset = if ($rsrcDiff.LastOffset -ge 0) { $rsrcDiff.LastOffset } else { '-' }
+    $rangeLimit = 64
+    $shownRanges = [Math]::Min($rsrcDiff.Ranges.Count, $rangeLimit)
+    $omittedRanges = $rsrcDiff.Ranges.Count - $shownRanges
+    $lines.Add("rsrc_diff section_a_length=$($rsrcA.RawSize) section_b_length=$($rsrcB.RawSize) common_length=$($rsrcDiff.CommonLength) size_delta=$($rsrcB.RawSize - $rsrcA.RawSize) unequal_bytes=$($rsrcDiff.UnequalBytes) first_diff_offset=$firstOffset last_diff_offset=$lastOffset ranges_total=$($rsrcDiff.Ranges.Count) ranges_omitted=$omittedRanges")
+    for ($index = 0; $index -lt $shownRanges; $index++) {
+        $lines.Add("  rsrc_diff_range=$($rsrcDiff.Ranges[$index])")
     }
 }
 $lines.Add("compare_coff_timestamp_identical=$($a.Timestamp -eq $b.Timestamp)")

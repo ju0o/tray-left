@@ -9,7 +9,8 @@ $buildRoot = Join-Path $env:RUNNER_TEMP 'jusage-rc-builds'
 $packageRoot = Join-Path $env:RUNNER_TEMP 'jusage-rc-package'
 $packageVerifyRoot = Join-Path $env:RUNNER_TEMP 'jusage-rc-package-verify'
 $packageZip = Join-Path $evidence 'jusage-v0.3.0-rc.zip'
-New-Item -ItemType Directory -Path $evidence, $buildRoot -Force | Out-Null
+$artifactDir = Join-Path $evidence 'binaries'
+New-Item -ItemType Directory -Path $evidence, $buildRoot, $artifactDir -Force | Out-Null
 $qaResultPath = Join-Path $evidence 'qa-results.txt'
 $qaResults = [ordered]@{
     unit_tests = 'NOT_RUN'
@@ -81,6 +82,10 @@ $buildEvidence = [ordered]@{
     build_command_b = 'cargo +1.90.0 build --release --locked --target x86_64-pc-windows-msvc --target-dir <RUNNER_TEMP>\jusage-rc-builds\b'
     release_a_sha256 = 'NOT_BUILT'
     release_b_sha256 = 'NOT_BUILT'
+    release_a_artifact_path = 'NOT_COPIED'
+    release_a_artifact_sha256 = 'NOT_COPIED'
+    release_b_artifact_path = 'NOT_COPIED'
+    release_b_artifact_sha256 = 'NOT_COPIED'
     a_b_match = 'NOT_EVALUATED'
 }
 function Write-BuildEvidence {
@@ -88,6 +93,21 @@ function Write-BuildEvidence {
     [IO.File]::WriteAllLines($script:buildEvidencePath, $lines, [Text.UTF8Encoding]::new($false))
 }
 Write-BuildEvidence
+
+function Copy-ReleaseArtifact {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$ExpectedSha256,
+        [Parameter(Mandatory)][string]$FileName
+    )
+    $destination = Join-Path $artifactDir $FileName
+    Copy-Item -LiteralPath $Source -Destination $destination -Force
+    $copiedSha256 = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($copiedSha256 -ne $ExpectedSha256) {
+        throw "The copied Release artifact $FileName does not match its build hash."
+    }
+    return $copiedSha256
+}
 
 Push-Location $workspace
 try {
@@ -110,8 +130,12 @@ try {
     $exeA = Join-Path $targetA "$target\release\jusage.exe"
     $shaA = (Get-FileHash -LiteralPath $exeA -Algorithm SHA256).Hash.ToLowerInvariant()
     $buildEvidence.release_a_sha256 = $shaA
+    $artifactShaA = Copy-ReleaseArtifact -Source $exeA -ExpectedSha256 $shaA -FileName 'release-a.exe'
+    $buildEvidence.release_a_artifact_path = 'binaries/release-a.exe'
+    $buildEvidence.release_a_artifact_sha256 = $artifactShaA
     Write-BuildEvidence
     Write-Output "RELEASE_A_SHA256=$shaA"
+    Write-Output "RELEASE_A_ARTIFACT_SHA256=$artifactShaA"
 
     Write-Output "Building B: $commandB"
     & cargo $toolchainArg build --release --locked --target $target --target-dir $targetB
@@ -120,6 +144,9 @@ try {
     $exeB = Join-Path $targetB "$target\release\jusage.exe"
     $shaB = (Get-FileHash -LiteralPath $exeB -Algorithm SHA256).Hash.ToLowerInvariant()
     $buildEvidence.release_b_sha256 = $shaB
+    $artifactShaB = Copy-ReleaseArtifact -Source $exeB -ExpectedSha256 $shaB -FileName 'release-b.exe'
+    $buildEvidence.release_b_artifact_path = 'binaries/release-b.exe'
+    $buildEvidence.release_b_artifact_sha256 = $artifactShaB
     $reproducible = $shaA -eq $shaB
     $buildEvidence.a_b_match = if ($reproducible) { 'PASS' } else { 'FAIL' }
     Write-BuildEvidence
