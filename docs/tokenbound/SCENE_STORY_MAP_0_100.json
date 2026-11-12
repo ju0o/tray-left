@@ -1,0 +1,1019 @@
+{
+  "schema_version": "concept-seed-1",
+  "product": "Jusage",
+  "world": "Humans Inside the Limit",
+  "direction": "100 to 0 = freedom illusion to captivity; reset = recurring illusion",
+  "note": "101 distinct narrative seeds, not 101 implemented sprites or verified 16px scenes. 98% references existing ASUS E scene; do not overwrite without inspecting source.",
+  "scenes": [
+    {
+      "remaining_pct": 100,
+      "title": "황금 우리",
+      "story": "100의 세 기둥 안에서 성대한 축제를 연다. 바깥 문은 잠겨 있다.",
+      "motion_idea": "온화한 불빛, 마지막에 문 그림자",
+      "chapter": "풍요의 환상",
+      "emotion": "자신감/무자각",
+      "accent": "#4FE3D3",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 99,
+      "title": "쌍둥이 탑",
+      "story": "두 개의 9를 잇는 다리를 걸으며 아래쪽 경계를 보지 못한다.",
+      "motion_idea": "다리 왕복, 느린 발걸음",
+      "chapter": "안락한 감금",
+      "emotion": "여유/익숙함",
+      "accent": "#55D9D3",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 98,
+      "title": "두 개의 방",
+      "story": "9의 방에서 쉬다가 8의 방으로 이동해 다시 쉰다. 기존 E안 보존.",
+      "motion_idea": "기존 16프레임 왕복·휴식 맥박",
+      "chapter": "안락한 감금",
+      "emotion": "여유/익숙함",
+      "accent": "#55D9D3",
+      "status": "E_AN_REFERENCE_KEEP_EXISTING_SOURCE"
+    },
+    {
+      "remaining_pct": 97,
+      "title": "기울어진 전망대",
+      "story": "9의 방에서 나와 7의 난간에 기대 도시를 바라본다.",
+      "motion_idea": "난간 쪽으로 한 번 이동",
+      "chapter": "안락한 감금",
+      "emotion": "여유/익숙함",
+      "accent": "#55D9D3",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 96,
+      "title": "계단과 방",
+      "story": "9의 옥상에서 6의 작은 침실까지 계단을 내려온다.",
+      "motion_idea": "계단 하강 후 정지",
+      "chapter": "안락한 감금",
+      "emotion": "여유/익숙함",
+      "accent": "#55D9D3",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 95,
+      "title": "온실",
+      "story": "9의 실내를 떠나 5의 선반 위 화분을 보살핀다.",
+      "motion_idea": "급수 동작 한 번",
+      "chapter": "안락한 감금",
+      "emotion": "여유/익숙함",
+      "accent": "#55D9D3",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 94,
+      "title": "편안한 작업대",
+      "story": "9의 거실에서 4의 작업대로 천천히 걸어간다.",
+      "motion_idea": "작업대 점등",
+      "chapter": "안락한 감금",
+      "emotion": "여유/익숙함",
+      "accent": "#55D9D3",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 93,
+      "title": "유리 복도",
+      "story": "9와 3 사이 유리 복도를 지나며 외부를 구경한다.",
+      "motion_idea": "느린 통과, 머리 돌림",
+      "chapter": "안락한 감금",
+      "emotion": "여유/익숙함",
+      "accent": "#55D9D3",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 92,
+      "title": "열린 도서관",
+      "story": "9의 둥근 서재에서 2의 경사 통로로 책을 운반한다.",
+      "motion_idea": "책 운반, 멈춤",
+      "chapter": "안락한 감금",
+      "emotion": "여유/익숙함",
+      "accent": "#55D9D3",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 91,
+      "title": "밝은 첨탑",
+      "story": "9 안에서 깨어나 1의 높은 전망대에 오른다.",
+      "motion_idea": "느린 수직 이동",
+      "chapter": "안락한 감금",
+      "emotion": "여유/익숙함",
+      "accent": "#55D9D3",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 90,
+      "title": "아직 풍요로운 문",
+      "story": "9의 방에서 0의 둥근 출입문을 열어본다.",
+      "motion_idea": "문이 열리다 닫힘",
+      "chapter": "안락한 감금",
+      "emotion": "여유/익숙함",
+      "accent": "#55D9D3",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 89,
+      "title": "처음 켠 AI",
+      "story": "8의 방에서 9의 작업실로 넘어가 처음 단말기를 켠다.",
+      "motion_idea": "단말기 푸른 점등",
+      "chapter": "편리한 의존",
+      "emotion": "만족/습관",
+      "accent": "#6CCEC8",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 88,
+      "title": "반복된 방",
+      "story": "8 두 개의 고리 안에 동일한 업무실이 복제된다.",
+      "motion_idea": "두 방의 번갈아 점등",
+      "chapter": "편리한 의존",
+      "emotion": "만족/습관",
+      "accent": "#6CCEC8",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 87,
+      "title": "편리한 지름길",
+      "story": "8에서 7의 경사로까지 자동 이동 발판을 탄다.",
+      "motion_idea": "발판 이동",
+      "chapter": "편리한 의존",
+      "emotion": "만족/습관",
+      "accent": "#6CCEC8",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 86,
+      "title": "자동화의 보상",
+      "story": "8의 작업실에서 6의 자원 상자를 받는다.",
+      "motion_idea": "상자 들어올림",
+      "chapter": "편리한 의존",
+      "emotion": "만족/습관",
+      "accent": "#6CCEC8",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 85,
+      "title": "연결선",
+      "story": "8의 문을 지나 5의 기계에 케이블을 꽂는다.",
+      "motion_idea": "케이블 맥박",
+      "chapter": "편리한 의존",
+      "emotion": "만족/습관",
+      "accent": "#6CCEC8",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 84,
+      "title": "첫 번째 알림",
+      "story": "8의 침대에서 쉬다가 4의 알림등을 흘겨본다.",
+      "motion_idea": "알림 반짝임",
+      "chapter": "편리한 의존",
+      "emotion": "만족/습관",
+      "accent": "#6CCEC8",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 83,
+      "title": "답변 기다림",
+      "story": "8의 테이블에서 3의 응답 창을 기다린다.",
+      "motion_idea": "점 세 개 번갈아",
+      "chapter": "편리한 의존",
+      "emotion": "만족/습관",
+      "accent": "#6CCEC8",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 82,
+      "title": "길들여진 동선",
+      "story": "8과 2 사이 정해진 통로만 걷게 된다.",
+      "motion_idea": "같은 구간 왕복",
+      "chapter": "편리한 의존",
+      "emotion": "만족/습관",
+      "accent": "#6CCEC8",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 81,
+      "title": "자동 추천",
+      "story": "8 안의 화살표가 가리키는 1의 길로 내려간다.",
+      "motion_idea": "화살표 따라 이동",
+      "chapter": "편리한 의존",
+      "emotion": "만족/습관",
+      "accent": "#6CCEC8",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 80,
+      "title": "동그란 벽",
+      "story": "8에서 0의 벽을 바라보지만 단순 장식이라 여긴다.",
+      "motion_idea": "잠시 멈추고 외면",
+      "chapter": "편리한 의존",
+      "emotion": "만족/습관",
+      "accent": "#6CCEC8",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 79,
+      "title": "손쉬운 답",
+      "story": "7의 경사로에서 9의 AI 창에 질문을 맡긴다.",
+      "motion_idea": "질문 신호 전송",
+      "chapter": "자동화된 일상",
+      "emotion": "안정/의존",
+      "accent": "#8DBEBA",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 78,
+      "title": "빠른 길",
+      "story": "7에서 8로 이어진 자동 사다리의 속도가 빨라진다.",
+      "motion_idea": "사다리 자동 이동",
+      "chapter": "자동화된 일상",
+      "emotion": "안정/의존",
+      "accent": "#8DBEBA",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 77,
+      "title": "의미 없는 반복",
+      "story": "두 7의 경사로를 구분하지 못하고 왕복한다.",
+      "motion_idea": "짧은 왕복 2회",
+      "chapter": "자동화된 일상",
+      "emotion": "안정/의존",
+      "accent": "#8DBEBA",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 76,
+      "title": "의존의 손잡이",
+      "story": "7의 난간을 놓고 6의 자동 손잡이에 몸을 싣는다.",
+      "motion_idea": "손이 손잡이로 이동",
+      "chapter": "자동화된 일상",
+      "emotion": "안정/의존",
+      "accent": "#8DBEBA",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 75,
+      "title": "줄어든 탐험",
+      "story": "7의 언덕에서 5의 작은 모니터만 바라본다.",
+      "motion_idea": "시선 고정",
+      "chapter": "자동화된 일상",
+      "emotion": "안정/의존",
+      "accent": "#8DBEBA",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 74,
+      "title": "단축키의 방",
+      "story": "7과 4 사이 자동문을 열고 바로 작업석에 앉는다.",
+      "motion_idea": "자동문 열림",
+      "chapter": "자동화된 일상",
+      "emotion": "안정/의존",
+      "accent": "#8DBEBA",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 73,
+      "title": "질문으로 시작",
+      "story": "7의 계단을 내려가 3의 문에 질문을 건다.",
+      "motion_idea": "질문 불빛",
+      "chapter": "자동화된 일상",
+      "emotion": "안정/의존",
+      "accent": "#8DBEBA",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 72,
+      "title": "정답의 미로",
+      "story": "7의 돌계단과 2의 복도가 하나의 정답 경로로 합쳐진다.",
+      "motion_idea": "한 방향 이동",
+      "chapter": "자동화된 일상",
+      "emotion": "안정/의존",
+      "accent": "#8DBEBA",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 71,
+      "title": "조용한 안도",
+      "story": "7 꼭대기에서 1의 기둥을 잡고 쉬며 AI 응답을 기다린다.",
+      "motion_idea": "기둥에 몸 기댐",
+      "chapter": "자동화된 일상",
+      "emotion": "안정/의존",
+      "accent": "#8DBEBA",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 70,
+      "title": "출구의 표지판",
+      "story": "7의 출구 표지판은 0의 둥근 길 안으로만 이어진다.",
+      "motion_idea": "화살표 순환",
+      "chapter": "자동화된 일상",
+      "emotion": "안정/의존",
+      "accent": "#8DBEBA",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 69,
+      "title": "부족한 재료",
+      "story": "6의 작업실에서 9의 저장고를 다시 뒤진다.",
+      "motion_idea": "서랍 열기 반복",
+      "chapter": "첫 불안",
+      "emotion": "의심/초조",
+      "accent": "#B4B59C",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 68,
+      "title": "호출 습관",
+      "story": "6에서 8로 이동할 때마다 AI 단말기를 한 번 누른다.",
+      "motion_idea": "규칙적인 호출 점멸",
+      "chapter": "첫 불안",
+      "emotion": "의심/초조",
+      "accent": "#B4B59C",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 67,
+      "title": "도움 없이는",
+      "story": "6의 난간에 매달렸다가 7의 경사 손잡이에 의지한다.",
+      "motion_idea": "손잡이 움켜쥠",
+      "chapter": "첫 불안",
+      "emotion": "의심/초조",
+      "accent": "#B4B59C",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 66,
+      "title": "복제된 요구",
+      "story": "두 6 안에서 같은 요청을 반복 입력한다.",
+      "motion_idea": "양쪽 번갈아 신호",
+      "chapter": "첫 불안",
+      "emotion": "의심/초조",
+      "accent": "#B4B59C",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 65,
+      "title": "흐릿한 창밖",
+      "story": "6 창문이 어두워지고 5의 모니터가 더 밝아진다.",
+      "motion_idea": "바깥 빛 감소",
+      "chapter": "첫 불안",
+      "emotion": "의심/초조",
+      "accent": "#B4B59C",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 64,
+      "title": "더 좁은 길",
+      "story": "6과 4 사이 통로가 한 칸씩 좁아진다.",
+      "motion_idea": "통로 축소",
+      "chapter": "첫 불안",
+      "emotion": "의심/초조",
+      "accent": "#B4B59C",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 63,
+      "title": "답을 기다리는 사람",
+      "story": "6의 의자에 앉아 3의 화면을 바라본다.",
+      "motion_idea": "발끝 초조한 흔들림",
+      "chapter": "첫 불안",
+      "emotion": "의심/초조",
+      "accent": "#B4B59C",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 62,
+      "title": "머뭇거림",
+      "story": "6의 계단 중간에서 2의 출입구로 갈지 고민한다.",
+      "motion_idea": "두 걸음 전진·후퇴",
+      "chapter": "첫 불안",
+      "emotion": "의심/초조",
+      "accent": "#B4B59C",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 61,
+      "title": "살짝 당겨진 줄",
+      "story": "6에서 1로 향하는 허리 케이블이 짧아진다.",
+      "motion_idea": "줄 팽팽해짐",
+      "chapter": "첫 불안",
+      "emotion": "의심/초조",
+      "accent": "#B4B59C",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 60,
+      "title": "첫 번째 균열",
+      "story": "6의 벽을 두드리자 0의 둥근 외벽에 금이 간다.",
+      "motion_idea": "균열 불빛",
+      "chapter": "첫 불안",
+      "emotion": "의심/초조",
+      "accent": "#B4B59C",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 59,
+      "title": "남은 시간",
+      "story": "5의 시계가 깜빡이고 9의 문을 서둘러 통과한다.",
+      "motion_idea": "빠른 걸음",
+      "chapter": "숫자를 세는 시간",
+      "emotion": "긴장/손실감",
+      "accent": "#C8B087",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 58,
+      "title": "조용한 카운터",
+      "story": "5에서 8의 방으로 옮겨 남은 횟수를 세기 시작한다.",
+      "motion_idea": "계수기 1틱",
+      "chapter": "숫자를 세는 시간",
+      "emotion": "긴장/손실감",
+      "accent": "#C8B087",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 57,
+      "title": "사라지는 창문",
+      "story": "5의 창 하나가 꺼지고 7의 사다리에 기대 선다.",
+      "motion_idea": "창 깜빡 후 소등",
+      "chapter": "숫자를 세는 시간",
+      "emotion": "긴장/손실감",
+      "accent": "#C8B087",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 56,
+      "title": "좁아진 휴식",
+      "story": "5의 침대에서 6의 좁은 의자로 잠깐 옮겨 앉는다.",
+      "motion_idea": "짧은 휴식",
+      "chapter": "숫자를 세는 시간",
+      "emotion": "긴장/손실감",
+      "accent": "#C8B087",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 55,
+      "title": "거울 같은 질문",
+      "story": "두 5의 화면에 같은 질문을 다시 입력한다.",
+      "motion_idea": "두 화면 번갈아 점등",
+      "chapter": "숫자를 세는 시간",
+      "emotion": "긴장/손실감",
+      "accent": "#C8B087",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 54,
+      "title": "작아진 여유",
+      "story": "5의 휴식등이 꺼지고 4의 작업대만 남는다.",
+      "motion_idea": "주변 어둠 확장",
+      "chapter": "숫자를 세는 시간",
+      "emotion": "긴장/손실감",
+      "accent": "#C8B087",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 53,
+      "title": "시계의 눈",
+      "story": "5의 시계를 쳐다보다 3의 굽은 복도로 들어간다.",
+      "motion_idea": "시계 점멸",
+      "chapter": "숫자를 세는 시간",
+      "emotion": "긴장/손실감",
+      "accent": "#C8B087",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 52,
+      "title": "우회 통로",
+      "story": "5에서 2까지 길을 돌아 토큰을 아끼려 한다.",
+      "motion_idea": "한 번 되돌아감",
+      "chapter": "숫자를 세는 시간",
+      "emotion": "긴장/손실감",
+      "accent": "#C8B087",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 51,
+      "title": "마지막 절반",
+      "story": "5의 넓은 방이 1의 한 줄 통로로 이어진다.",
+      "motion_idea": "폭 좁아지는 통과",
+      "chapter": "숫자를 세는 시간",
+      "emotion": "긴장/손실감",
+      "accent": "#C8B087",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 50,
+      "title": "중앙의 문턱",
+      "story": "5와 0의 사이에서 문이 반만 열린 채 멈춘다.",
+      "motion_idea": "문 개폐 불완전",
+      "chapter": "숫자를 세는 시간",
+      "emotion": "긴장/손실감",
+      "accent": "#C8B087",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 49,
+      "title": "경고음",
+      "story": "4의 벽에서 작은 경고등이 켜지자 9의 방을 살핀다.",
+      "motion_idea": "짧은 경고 맥박",
+      "chapter": "부서지는 여유",
+      "emotion": "불안/압박",
+      "accent": "#D9A675",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 48,
+      "title": "빈 의자",
+      "story": "4의 작업대 옆 의자가 사라지고 8의 바닥에 앉는다.",
+      "motion_idea": "앉기, 고개 숙임",
+      "chapter": "부서지는 여유",
+      "emotion": "불안/압박",
+      "accent": "#D9A675",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 47,
+      "title": "가벼운 균열",
+      "story": "4의 구석이 무너져 7의 비탈을 붙잡는다.",
+      "motion_idea": "부서진 픽셀 낙하",
+      "chapter": "부서지는 여유",
+      "emotion": "불안/압박",
+      "accent": "#D9A675",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 46,
+      "title": "매달린 가방",
+      "story": "4의 손잡이에 짐을 걸고 6의 좁은 출구로 기어간다.",
+      "motion_idea": "가방 흔들림",
+      "chapter": "부서지는 여유",
+      "emotion": "불안/압박",
+      "accent": "#D9A675",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 45,
+      "title": "좁은 문",
+      "story": "4의 출구가 절반만 열려 5의 좁은 틈으로 몸을 숙인다.",
+      "motion_idea": "몸 숙여 통과",
+      "chapter": "부서지는 여유",
+      "emotion": "불안/압박",
+      "accent": "#D9A675",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 44,
+      "title": "닫히는 문들",
+      "story": "두 4의 문이 차례로 잠기며 사람이 가운데 갇힌다.",
+      "motion_idea": "문 잠금 2회",
+      "chapter": "부서지는 여유",
+      "emotion": "불안/압박",
+      "accent": "#D9A675",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 43,
+      "title": "응답을 구걸",
+      "story": "4의 단말기에 손을 뻗고 3의 회신을 기다린다.",
+      "motion_idea": "뻗은 팔 유지",
+      "chapter": "부서지는 여유",
+      "emotion": "불안/압박",
+      "accent": "#D9A675",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 42,
+      "title": "끊어지는 계단",
+      "story": "4에서 2로 이어지는 계단 한 칸이 사라진다.",
+      "motion_idea": "발 멈칫",
+      "chapter": "부서지는 여유",
+      "emotion": "불안/압박",
+      "accent": "#D9A675",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 41,
+      "title": "붙잡힌 그림자",
+      "story": "4와 1 사이 케이블이 사람의 그림자를 끌어당긴다.",
+      "motion_idea": "그림자 당김",
+      "chapter": "부서지는 여유",
+      "emotion": "불안/압박",
+      "accent": "#D9A675",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 40,
+      "title": "고장 난 원형문",
+      "story": "4의 조작판으로 0의 출입문을 열려 하지만 반만 돌아간다.",
+      "motion_idea": "문 덜컹",
+      "chapter": "부서지는 여유",
+      "emotion": "불안/압박",
+      "accent": "#D9A675",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 39,
+      "title": "재시도",
+      "story": "3의 굽은 벽을 두드리고 9의 단말기에 다시 손을 댄다.",
+      "motion_idea": "반복 탭",
+      "chapter": "재시도의 노동",
+      "emotion": "조급/집착",
+      "accent": "#DF956B",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 38,
+      "title": "깨진 다리",
+      "story": "3과 8을 잇는 다리가 갈라져 건너뛰어야 한다.",
+      "motion_idea": "짧은 점프",
+      "chapter": "재시도의 노동",
+      "emotion": "조급/집착",
+      "accent": "#DF956B",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 37,
+      "title": "보수 노동",
+      "story": "3의 균열에 붙어 7의 비계를 수리한다.",
+      "motion_idea": "망치 한 번",
+      "chapter": "재시도의 노동",
+      "emotion": "조급/집착",
+      "accent": "#DF956B",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 36,
+      "title": "남은 창의 개수",
+      "story": "3의 창 두 개를 닫고 6의 마지막 창만 남긴다.",
+      "motion_idea": "창 두 번 소등",
+      "chapter": "재시도의 노동",
+      "emotion": "조급/집착",
+      "accent": "#DF956B",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 35,
+      "title": "거친 진동",
+      "story": "3의 바닥이 떨려 5의 손잡이를 붙잡는다.",
+      "motion_idea": "짧은 흔들림",
+      "chapter": "재시도의 노동",
+      "emotion": "조급/집착",
+      "accent": "#DF956B",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 34,
+      "title": "작동하지 않는 레버",
+      "story": "3의 레버를 반복 당겨도 4의 게이트가 움직이지 않는다.",
+      "motion_idea": "레버 2회",
+      "chapter": "재시도의 노동",
+      "emotion": "조급/집착",
+      "accent": "#DF956B",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 33,
+      "title": "똑같은 탈출구",
+      "story": "두 3 사이를 오가며 출구가 같다는 것을 깨닫는다.",
+      "motion_idea": "양쪽 왕복",
+      "chapter": "재시도의 노동",
+      "emotion": "조급/집착",
+      "accent": "#DF956B",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 32,
+      "title": "아래로 향하는 화살표",
+      "story": "3의 경사면 아래쪽 2의 복도를 따라 미끄러진다.",
+      "motion_idea": "하강",
+      "chapter": "재시도의 노동",
+      "emotion": "조급/집착",
+      "accent": "#DF956B",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 31,
+      "title": "단 하나의 난간",
+      "story": "3 끝에서 1의 기둥을 붙잡고 숨을 고른다.",
+      "motion_idea": "팔에 힘주기",
+      "chapter": "재시도의 노동",
+      "emotion": "조급/집착",
+      "accent": "#DF956B",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 30,
+      "title": "닫힌 고리",
+      "story": "3의 출구가 0으로 이어져 다시 시작점에 돌아온다.",
+      "motion_idea": "작은 순환",
+      "chapter": "재시도의 노동",
+      "emotion": "조급/집착",
+      "accent": "#DF956B",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 29,
+      "title": "양보한 자리",
+      "story": "2의 좁은 계단에서 9의 제어 장치에 자리를 내준다.",
+      "motion_idea": "옆으로 비켜섬",
+      "chapter": "아슬아슬한 생존",
+      "emotion": "절박/기대",
+      "accent": "#E68B66",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 28,
+      "title": "위태로운 잠",
+      "story": "2 위에 누웠다가 8의 작은 공간으로 미끄러진다.",
+      "motion_idea": "한 번 미끄러짐",
+      "chapter": "아슬아슬한 생존",
+      "emotion": "절박/기대",
+      "accent": "#E68B66",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 27,
+      "title": "지탱하는 밧줄",
+      "story": "2의 끝에 줄을 걸고 7의 비탈을 천천히 올라간다.",
+      "motion_idea": "줄 팽팽",
+      "chapter": "아슬아슬한 생존",
+      "emotion": "절박/기대",
+      "accent": "#E68B66",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 26,
+      "title": "남은 연료",
+      "story": "2의 작은 연료통을 들고 6의 방으로 뛰어간다.",
+      "motion_idea": "연료통 덜컹",
+      "chapter": "아슬아슬한 생존",
+      "emotion": "절박/기대",
+      "accent": "#E68B66",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 25,
+      "title": "신호를 보내는 사람",
+      "story": "2의 곡선 위에서 5의 탑에 구조 신호를 보낸다.",
+      "motion_idea": "깜빡이는 구조등",
+      "chapter": "아슬아슬한 생존",
+      "emotion": "절박/기대",
+      "accent": "#E68B66",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 24,
+      "title": "한 칸의 실수",
+      "story": "2의 발판이 빠져 4의 틈으로 내려앉는다.",
+      "motion_idea": "발판 낙하",
+      "chapter": "아슬아슬한 생존",
+      "emotion": "절박/기대",
+      "accent": "#E68B66",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 23,
+      "title": "멈춘 통로",
+      "story": "2에서 3으로 가는 문이 닫혀 노크한다.",
+      "motion_idea": "세 번 노크",
+      "chapter": "아슬아슬한 생존",
+      "emotion": "절박/기대",
+      "accent": "#E68B66",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 22,
+      "title": "닫힌 양쪽",
+      "story": "두 2의 곡선 사이 출구를 찾다 같은 자리로 돌아온다.",
+      "motion_idea": "작은 순환",
+      "chapter": "아슬아슬한 생존",
+      "emotion": "절박/기대",
+      "accent": "#E68B66",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 21,
+      "title": "마지막 사다리",
+      "story": "2의 난간에서 1의 높은 벽에 밧줄을 건다.",
+      "motion_idea": "밧줄 던짐",
+      "chapter": "아슬아슬한 생존",
+      "emotion": "절박/기대",
+      "accent": "#E68B66",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 20,
+      "title": "빈 도넛",
+      "story": "2에서 굴러온 사람이 0의 텅 빈 내부를 들여다본다.",
+      "motion_idea": "0 안쪽 바라봄",
+      "chapter": "아슬아슬한 생존",
+      "emotion": "절박/기대",
+      "accent": "#E68B66",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 19,
+      "title": "가느다란 연결",
+      "story": "1의 기둥과 9의 방 사이 줄 한 가닥으로 이동한다.",
+      "motion_idea": "줄타기",
+      "chapter": "마지막 자원",
+      "emotion": "공포/미련",
+      "accent": "#EA766A",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 18,
+      "title": "떨어지는 불빛",
+      "story": "1의 좁은 절벽에서 8의 고리로 뛰어들어 겨우 착지한다.",
+      "motion_idea": "낙하·착지",
+      "chapter": "마지막 자원",
+      "emotion": "공포/미련",
+      "accent": "#EA766A",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 17,
+      "title": "밀려나는 공간",
+      "story": "1의 벽에서 7의 비계가 무너져 잡을 곳이 줄어든다.",
+      "motion_idea": "손잡이 붕괴",
+      "chapter": "마지막 자원",
+      "emotion": "공포/미련",
+      "accent": "#EA766A",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 16,
+      "title": "추락 직전",
+      "story": "1의 기둥 끝에서 6의 좁은 고리로 매달린다.",
+      "motion_idea": "한 팔 매달림",
+      "chapter": "마지막 자원",
+      "emotion": "공포/미련",
+      "accent": "#EA766A",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 15,
+      "title": "다시 묻기",
+      "story": "1의 절벽에 매달린 채 5의 단말기를 힘겹게 누른다.",
+      "motion_idea": "손 뻗기",
+      "chapter": "마지막 자원",
+      "emotion": "공포/미련",
+      "accent": "#EA766A",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 14,
+      "title": "무너지는 발판",
+      "story": "1 위의 마지막 판자가 4쪽으로 기울어진다.",
+      "motion_idea": "판자 기울기",
+      "chapter": "마지막 자원",
+      "emotion": "공포/미련",
+      "accent": "#EA766A",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 13,
+      "title": "구조 요청",
+      "story": "1의 끝에서 3의 굽은 벽에 신호를 보낸다.",
+      "motion_idea": "한 번 점멸",
+      "chapter": "마지막 자원",
+      "emotion": "공포/미련",
+      "accent": "#EA766A",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 12,
+      "title": "구부러진 계단",
+      "story": "1에서 2로 가는 좁은 계단을 무릎으로 기어간다.",
+      "motion_idea": "기어가기",
+      "chapter": "마지막 자원",
+      "emotion": "공포/미련",
+      "accent": "#EA766A",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 11,
+      "title": "두 개의 절벽",
+      "story": "두 1 사이에서 한 손씩 뻗어 버틴다.",
+      "motion_idea": "두 팔 버티기",
+      "chapter": "마지막 자원",
+      "emotion": "공포/미련",
+      "accent": "#EA766A",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 10,
+      "title": "추락의 입구",
+      "story": "1의 바깥쪽을 붙잡고 0의 검은 원을 내려다본다.",
+      "motion_idea": "아래쪽 시선",
+      "chapter": "마지막 자원",
+      "emotion": "공포/미련",
+      "accent": "#EA766A",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 9,
+      "title": "흔들리는 방",
+      "story": "9의 안쪽 공간이 흔들려 벽을 양손으로 붙잡는다.",
+      "motion_idea": "벽 붙들기",
+      "chapter": "공황과 속박",
+      "emotion": "패닉/생존",
+      "accent": "#ED6674",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 8,
+      "title": "두 개의 감옥",
+      "story": "8의 두 고리 사이 좁은 구멍을 지나 탈출하려 한다.",
+      "motion_idea": "위아래 이동",
+      "chapter": "공황과 속박",
+      "emotion": "패닉/생존",
+      "accent": "#ED6674",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 7,
+      "title": "부서진 경사",
+      "story": "7의 경사면이 갈라져 발끝으로 균형을 잡는다.",
+      "motion_idea": "발끝 흔들림",
+      "chapter": "공황과 속박",
+      "emotion": "패닉/생존",
+      "accent": "#ED6674",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 6,
+      "title": "닫히는 고리",
+      "story": "6의 내부에 갇혀 마지막 출입구로 기어간다.",
+      "motion_idea": "문 좁아짐",
+      "chapter": "공황과 속박",
+      "emotion": "패닉/생존",
+      "accent": "#ED6674",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 5,
+      "title": "부러진 손잡이",
+      "story": "5의 획에 매달렸다가 손잡이 한쪽이 부러진다.",
+      "motion_idea": "손잡이 흔들림",
+      "chapter": "공황과 속박",
+      "emotion": "패닉/생존",
+      "accent": "#ED6674",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 4,
+      "title": "사라진 발판",
+      "story": "4의 횡단면이 사라져 양쪽 벽을 밀며 버틴다.",
+      "motion_idea": "두 팔 밀기",
+      "chapter": "공황과 속박",
+      "emotion": "패닉/생존",
+      "accent": "#ED6674",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 3,
+      "title": "끝없는 굴곡",
+      "story": "3의 두 굴곡을 넘지만 계속 같은 자리로 돌아온다.",
+      "motion_idea": "제자리 회전",
+      "chapter": "공황과 속박",
+      "emotion": "패닉/생존",
+      "accent": "#ED6674",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 2,
+      "title": "미끄러운 절벽",
+      "story": "2의 휘어진 획 위를 올라가다 반복 미끄러진다.",
+      "motion_idea": "오르기·미끄러짐",
+      "chapter": "공황과 속박",
+      "emotion": "패닉/생존",
+      "accent": "#ED6674",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 1,
+      "title": "마지막 손",
+      "story": "숫자 1이라는 절벽에 한 손으로 매달려 놓지 못한다.",
+      "motion_idea": "매달림·진자",
+      "chapter": "마지막 매달림",
+      "emotion": "절망/미련",
+      "accent": "#EE586F",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    },
+    {
+      "remaining_pct": 0,
+      "title": "영원한 쳇바퀴",
+      "story": "숫자 0의 내부가 쳇바퀴다. 인간은 AI를 다시 쓰기 위해 끝없이 뛴다.",
+      "motion_idea": "달리기 반복, 탈출 없음",
+      "chapter": "영원한 쳇바퀴",
+      "emotion": "속박/무한반복",
+      "accent": "#C64B63",
+      "status": "NARRATIVE_SEED_NOT_IMPLEMENTED"
+    }
+  ]
+}
